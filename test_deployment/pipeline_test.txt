@@ -12,3 +12,4 @@ If you see this file on your Lightsail instance at:
 Then the GitHub Actions deployment pipeline is working perfectly!
 
 Test ID: PIPELINE_TEST_20250829
+SSH FIX ATTEMPT: Fixed SSH permissions - Testing again at 10:45 UTC
