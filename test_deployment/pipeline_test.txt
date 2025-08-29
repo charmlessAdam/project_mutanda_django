@@ -1,0 +1,14 @@
+GitHub Actions Pipeline Test
+===========================
+
+This file was created to test if the automated deployment pipeline is working correctly.
+
+Created at: 2025-08-29
+Purpose: Verify that changes pushed to GitHub are automatically deployed to Lightsail
+
+If you see this file on your Lightsail instance at:
+/opt/bitnami/apache2/htdocs/django_project/test_deployment/pipeline_test.txt
+
+Then the GitHub Actions deployment pipeline is working perfectly!
+
+Test ID: PIPELINE_TEST_20250829
