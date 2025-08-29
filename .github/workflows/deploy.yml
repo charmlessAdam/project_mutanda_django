@@ -1,0 +1,60 @@
+name: Deploy to Lightsail
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup SSH
+      uses: webfactory/ssh-agent@v0.7.0
+      with:
+        ssh-private-key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+    
+    - name: Add Lightsail to known hosts
+      run: |
+        ssh-keyscan -H ${{ secrets.LIGHTSAIL_HOST }} >> ~/.ssh/known_hosts
+    
+    - name: Deploy to Lightsail
+      run: |
+        ssh ${{ secrets.LIGHTSAIL_USER }}@${{ secrets.LIGHTSAIL_HOST }} << 'EOF'
+          # Navigate to project directory
+          cd /opt/bitnami/apache2/htdocs/
+          
+          # Backup current deployment
+          if [ -d "django_project" ]; then
+            sudo mv django_project django_project_backup_$(date +%Y%m%d_%H%M%S)
+          fi
+          
+          # Clone fresh code
+          sudo git clone https://github.com/${{ github.repository }} django_project
+          cd django_project
+          
+          # Set proper ownership
+          sudo chown -R bitnami:bitnami /opt/bitnami/apache2/htdocs/django_project
+          
+          # Install dependencies
+          pip3 install -r requirements.txt --user
+          
+          # Run Django management commands
+          python3 manage.py migrate --noinput
+          python3 manage.py collectstatic --noinput
+          
+          # Set file permissions
+          sudo chmod -R 755 /opt/bitnami/apache2/htdocs/django_project
+          
+          # Copy Apache configuration
+          sudo cp apache_django.conf /opt/bitnami/apache2/conf/bitnami/bitnami-apps-prefix.conf
+          
+          # Restart Apache
+          sudo systemctl restart apache2
+          
+          echo "Deployment completed successfully!"
+        EOF
