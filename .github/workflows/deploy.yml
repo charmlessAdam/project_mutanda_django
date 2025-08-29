@@ -36,8 +36,8 @@ jobs:
             sudo mv django_project django_project_backup_$(date +%Y%m%d_%H%M%S)
           fi
           
-          # Clone fresh code using SSH (with deploy key)
-          sudo -u bitnami git clone git@github.com:${{ github.repository }}.git django_project
+          # Clone fresh code using HTTPS (public repo)
+          sudo -u bitnami git clone https://github.com/${{ github.repository }}.git django_project
           cd django_project
           
           # Set proper ownership
