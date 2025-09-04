@@ -56,6 +56,8 @@ def import_animals(request):
             'section_number': 'section',
             'feedlot': 'section',
             'area': 'section',
+            'group': 'section',  # Added for your Excel GROUP column
+            'groups': 'section',
             
             # Other columns
             'breed': 'breed',
@@ -152,25 +154,36 @@ def import_animals(request):
                             break
                     
                     if section_identifier:
-                        # Try to find section by number first, then by name
-                        try:
-                            section_number = int(section_identifier)
-                            section = CattleSection.objects.filter(section_number=section_number).first()
-                        except ValueError:
+                        # First, try to find section by exact name match
+                        section = CattleSection.objects.filter(name__iexact=section_identifier).first()
+                        
+                        if not section:
+                            # Try to find by partial name match
                             section = CattleSection.objects.filter(name__icontains=section_identifier).first()
+                        
+                        if not section:
+                            # Try to find by section number if it's numeric
+                            try:
+                                section_number = int(section_identifier)
+                                section = CattleSection.objects.filter(section_number=section_number).first()
+                            except ValueError:
+                                section_number = None
                         
                         # If section doesn't exist, create it
                         if not section:
-                            try:
+                            # Generate section number
+                            if section_identifier.isdigit():
                                 section_number = int(section_identifier)
-                            except ValueError:
-                                section_number = CattleSection.objects.count() + 1
+                            else:
+                                # For group names like "JUMBO BULLS", generate sequential number
+                                max_section = CattleSection.objects.order_by('-section_number').first()
+                                section_number = (max_section.section_number + 1) if max_section else 1
                             
                             section = CattleSection.objects.create(
-                                name=f'Section {section_number}' if section_identifier.isdigit() else section_identifier,
+                                name=section_identifier,  # Use the exact group name like "JUMBO BULLS"
                                 section_number=section_number,
-                                capacity=50,  # Default capacity
-                                description=f'Auto-created from import',
+                                capacity=100,  # Larger capacity for group sections
+                                description=f'Auto-created from import - Group: {section_identifier}',
                                 created_by=request.user
                             )
                     else:
