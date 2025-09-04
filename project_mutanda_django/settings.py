@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'users',
     'medicine',
+    'cattle',
 ]
 
 REST_FRAMEWORK = {
