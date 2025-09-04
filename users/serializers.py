@@ -29,7 +29,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'username', 'email', 'first_name', 'last_name', 
             'full_name', 'role', 'role_display', 'role_level', 'phone', 'location', 
-            'bio', 'department', 'manager', 'created_by', 'is_active',
+            'bio', 'department', 'manager', 'created_by', 'is_active', 'is_superuser',
             'can_create_users', 'can_edit_users', 'can_deactivate_users',
             'date_joined', 'last_login', 'last_password_change',
             'creatable_roles', 'manageable_users_count', 'subordinates_count'
