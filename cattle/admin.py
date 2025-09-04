@@ -21,6 +21,9 @@ class AnimalAdmin(admin.ModelAdmin):
     search_fields = ['eid', 'vid']
     ordering = ['section__section_number', 'eid']
     readonly_fields = ['age_days', 'days_in_system']
+    list_per_page = 50
+    
+    actions = ['delete_selected_superuser_only', 'move_to_section']
     
     fieldsets = (
         ('Basic Information', {
@@ -40,6 +43,33 @@ class AnimalAdmin(admin.ModelAdmin):
             'fields': ('notes',)
         })
     )
+    
+    def delete_selected_superuser_only(self, request, queryset):
+        """Custom delete action for superusers only"""
+        if not request.user.is_superuser:
+            from django.contrib import messages
+            messages.error(request, "Only superusers can delete animals.")
+            return
+        
+        count = queryset.count()
+        queryset.delete()
+        from django.contrib import messages
+        messages.success(request, f"Successfully deleted {count} animals.")
+    delete_selected_superuser_only.short_description = "🗑️ Delete selected animals (Superuser only)"
+    
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        
+        # Remove default delete action, replace with superuser-only version
+        if 'delete_selected' in actions:
+            del actions['delete_selected']
+        
+        # Only show custom actions to superusers
+        if not request.user.is_superuser:
+            if 'delete_selected_superuser_only' in actions:
+                del actions['delete_selected_superuser_only']
+        
+        return actions
 
 
 @admin.register(WeightRecord)

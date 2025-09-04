@@ -243,6 +243,56 @@ def sections_list(request):
     return Response(serializer.data)
 
 
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def cleanup_animals(request):
+    """
+    Clean up animals - superuser only
+    """
+    if not request.user.is_superuser:
+        return Response({'error': 'Only superusers can delete animals'}, 
+                      status=status.HTTP_403_FORBIDDEN)
+    
+    action = request.data.get('action')
+    
+    if action == 'delete_all':
+        count = Animal.objects.count()
+        Animal.objects.all().delete()
+        return Response({'message': f'Deleted all {count} animals'}, 
+                      status=status.HTTP_200_OK)
+    
+    elif action == 'delete_default_sections':
+        default_sections = CattleSection.objects.filter(
+            models.Q(name__icontains='default') |
+            models.Q(name__icontains='section') |
+            models.Q(section_number=1)
+        )
+        count = Animal.objects.filter(section__in=default_sections).count()
+        Animal.objects.filter(section__in=default_sections).delete()
+        return Response({'message': f'Deleted {count} animals from default sections'}, 
+                      status=status.HTTP_200_OK)
+    
+    elif action == 'delete_section':
+        section_id = request.data.get('section_id')
+        if not section_id:
+            return Response({'error': 'section_id required'}, 
+                          status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            section = CattleSection.objects.get(id=section_id)
+            count = Animal.objects.filter(section=section).count()
+            Animal.objects.filter(section=section).delete()
+            return Response({'message': f'Deleted {count} animals from {section.name}'}, 
+                          status=status.HTTP_200_OK)
+        except CattleSection.DoesNotExist:
+            return Response({'error': 'Section not found'}, 
+                          status=status.HTTP_404_NOT_FOUND)
+    
+    else:
+        return Response({'error': 'Invalid action. Use: delete_all, delete_default_sections, or delete_section'}, 
+                      status=status.HTTP_400_BAD_REQUEST)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def animals_list(request):
