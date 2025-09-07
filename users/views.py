@@ -5,7 +5,7 @@ from rest_framework.viewsets import ModelViewSet
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 from django.db.models import Q
-from .models import UserActivity, Department
+from .models import UserActivity, Department, Section, SectionPermission
 from .serializers import (
     UserSerializer, 
     RegisterSerializer, 
@@ -15,7 +15,9 @@ from .serializers import (
     UserCreateSerializer,
     UserManagementSerializer,
     UserActivitySerializer,
-    DepartmentSerializer
+    DepartmentSerializer,
+    SectionSerializer,
+    SectionPermissionSerializer
 )
 
 User = get_user_model()
@@ -321,3 +323,230 @@ class UserActivityViewSet(generics.ListAPIView):
             return UserActivity.objects.filter(
                 Q(target_user_id__in=manageable_user_ids) | Q(performed_by=user)
             ).select_related('performed_by', 'target_user')
+
+
+class SectionViewSet(ModelViewSet):
+    """List all available system sections"""
+    serializer_class = SectionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = Section.objects.filter(is_active=True).order_by('display_name')
+    http_method_names = ['get']  # Only allow GET methods
+    
+
+class SectionPermissionViewSet(ModelViewSet):
+    """Manage section permissions for users (Super Admin only)"""
+    serializer_class = SectionPermissionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """Only super admins can manage section permissions"""
+        if self.request.user.role != 'super_admin':
+            return SectionPermission.objects.none()
+        
+        # Optional filtering by user or section
+        queryset = SectionPermission.objects.select_related('user', 'section', 'granted_by')
+        
+        user_id = self.request.query_params.get('user_id')
+        section_id = self.request.query_params.get('section_id')
+        
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+        if section_id:
+            queryset = queryset.filter(section_id=section_id)
+            
+        return queryset.order_by('user__username', 'section__display_name')
+    
+    def perform_create(self, serializer):
+        """Create section permission with activity logging"""
+        if self.request.user.role != 'super_admin':
+            raise permissions.PermissionDenied("Only super admins can manage section permissions.")
+        
+        permission = serializer.save(granted_by=self.request.user)
+        
+        # Log activity
+        UserActivity.objects.create(
+            performed_by=self.request.user,
+            target_user=permission.user,
+            action='updated',
+            description=f"Granted {permission.get_permission_level_display()} access to {permission.section.display_name}",
+            new_values={
+                'section': permission.section.name,
+                'permission_level': permission.permission_level
+            },
+            ip_address=self.request.META.get('REMOTE_ADDR')
+        )
+    
+    def perform_update(self, serializer):
+        """Update section permission with activity logging"""
+        if self.request.user.role != 'super_admin':
+            raise permissions.PermissionDenied("Only super admins can manage section permissions.")
+        
+        old_permission = self.get_object()
+        old_level = old_permission.permission_level
+        
+        permission = serializer.save()
+        
+        # Log activity
+        UserActivity.objects.create(
+            performed_by=self.request.user,
+            target_user=permission.user,
+            action='updated',
+            description=f"Changed {permission.section.display_name} access from {old_permission.get_permission_level_display()} to {permission.get_permission_level_display()}",
+            old_values={
+                'section': permission.section.name,
+                'permission_level': old_level
+            },
+            new_values={
+                'section': permission.section.name,
+                'permission_level': permission.permission_level
+            },
+            ip_address=self.request.META.get('REMOTE_ADDR')
+        )
+    
+    def perform_destroy(self, instance):
+        """Remove section permission with activity logging"""
+        if self.request.user.role != 'super_admin':
+            raise permissions.PermissionDenied("Only super admins can manage section permissions.")
+        
+        # Log activity before deletion
+        UserActivity.objects.create(
+            performed_by=self.request.user,
+            target_user=instance.user,
+            action='updated',
+            description=f"Removed access to {instance.section.display_name}",
+            old_values={
+                'section': instance.section.name,
+                'permission_level': instance.permission_level
+            },
+            ip_address=self.request.META.get('REMOTE_ADDR')
+        )
+        
+        super().perform_destroy(instance)
+    
+    @action(detail=False, methods=['post'])
+    def bulk_update(self, request):
+        """Bulk update permissions for a user across all sections"""
+        if request.user.role != 'super_admin':
+            return Response({
+                'success': False,
+                'error': 'Only super admins can manage section permissions.'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        user_id = request.data.get('user_id')
+        permissions_data = request.data.get('permissions', [])
+        
+        if not user_id:
+            return Response({
+                'success': False,
+                'error': 'user_id is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            target_user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'User not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        updated_permissions = []
+        
+        for perm_data in permissions_data:
+            section_id = perm_data.get('section_id')
+            permission_level = perm_data.get('permission_level')
+            
+            if not section_id or not permission_level:
+                continue
+                
+            try:
+                section = Section.objects.get(id=section_id)
+                
+                # Update or create permission
+                permission, created = SectionPermission.objects.update_or_create(
+                    user=target_user,
+                    section=section,
+                    defaults={
+                        'permission_level': permission_level,
+                        'granted_by': request.user
+                    }
+                )
+                
+                updated_permissions.append({
+                    'section': section.display_name,
+                    'permission_level': permission.get_permission_level_display(),
+                    'created': created
+                })
+                
+                # Log activity
+                action_desc = f"{'Granted' if created else 'Updated'} {permission.get_permission_level_display()} access to {section.display_name}"
+                UserActivity.objects.create(
+                    performed_by=request.user,
+                    target_user=target_user,
+                    action='updated',
+                    description=action_desc,
+                    new_values={
+                        'section': section.name,
+                        'permission_level': permission_level
+                    },
+                    ip_address=request.META.get('REMOTE_ADDR')
+                )
+                
+            except Section.DoesNotExist:
+                continue
+        
+        return Response({
+            'success': True,
+            'message': f'Updated permissions for {target_user.username}',
+            'updated_permissions': updated_permissions
+        })
+    
+    @action(detail=False, methods=['get'])
+    def user_permissions_matrix(self, request):
+        """Get permission matrix for all users and sections"""
+        if request.user.role != 'super_admin':
+            return Response({
+                'success': False,
+                'error': 'Only super admins can view the permission matrix.'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Get all users and sections
+        users = User.objects.all().order_by('username')
+        sections = Section.objects.filter(is_active=True).order_by('display_name')
+        
+        # Build permission matrix
+        matrix = []
+        for user in users:
+            user_permissions = {}
+            for section in sections:
+                try:
+                    perm = SectionPermission.objects.get(user=user, section=section)
+                    user_permissions[section.name] = {
+                        'level': perm.permission_level,
+                        'display': perm.get_permission_level_display(),
+                        'granted_by': perm.granted_by.username if perm.granted_by else None,
+                        'granted_at': perm.granted_at
+                    }
+                except SectionPermission.DoesNotExist:
+                    user_permissions[section.name] = {
+                        'level': 'no_access',
+                        'display': 'No Access',
+                        'granted_by': None,
+                        'granted_at': None
+                    }
+            
+            matrix.append({
+                'user': {
+                    'id': user.id,
+                    'username': user.username,
+                    'full_name': user.full_name,
+                    'role': user.role,
+                    'role_display': user.get_role_display()
+                },
+                'permissions': user_permissions
+            })
+        
+        return Response({
+            'success': True,
+            'sections': [{'name': s.name, 'display_name': s.display_name} for s in sections],
+            'matrix': matrix
+        })

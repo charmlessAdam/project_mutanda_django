@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model, authenticate
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import UserActivity, Department
+from .models import UserActivity, Department, Section, SectionPermission
 
 User = get_user_model()
 
@@ -236,3 +236,86 @@ class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
         fields = ('id', 'name', 'description', 'head', 'created_at')
+
+
+class SectionSerializer(serializers.ModelSerializer):
+    """Serializer for system sections"""
+    name_display = serializers.CharField(source='get_name_display', read_only=True)
+    
+    class Meta:
+        model = Section
+        fields = ('id', 'name', 'name_display', 'display_name', 'description', 'is_active', 'created_at')
+
+
+class SectionPermissionSerializer(serializers.ModelSerializer):
+    """Serializer for section permissions"""
+    user = UserBasicSerializer(read_only=True)
+    section = SectionSerializer(read_only=True)
+    granted_by = UserBasicSerializer(read_only=True)
+    permission_level_display = serializers.CharField(source='get_permission_level_display', read_only=True)
+    permission_level_numeric = serializers.IntegerField(read_only=True)
+    
+    # Write-only fields for creation/updates
+    user_id = serializers.IntegerField(write_only=True)
+    section_id = serializers.IntegerField(write_only=True)
+    
+    class Meta:
+        model = SectionPermission
+        fields = (
+            'id', 'user', 'section', 'permission_level', 'permission_level_display', 
+            'permission_level_numeric', 'granted_by', 'granted_at', 'updated_at', 'notes',
+            'user_id', 'section_id'
+        )
+        read_only_fields = ('granted_by', 'granted_at', 'updated_at')
+    
+    def validate_user_id(self, value):
+        try:
+            user = User.objects.get(id=value)
+            # Only super admins can manage section permissions
+            request_user = self.context['request'].user
+            if request_user.role != 'super_admin':
+                raise serializers.ValidationError("Only super admins can manage section permissions.")
+            return value
+        except User.DoesNotExist:
+            raise serializers.ValidationError("User not found.")
+    
+    def validate_section_id(self, value):
+        try:
+            section = Section.objects.get(id=value, is_active=True)
+            return value
+        except Section.DoesNotExist:
+            raise serializers.ValidationError("Section not found or inactive.")
+    
+    def create(self, validated_data):
+        user_id = validated_data.pop('user_id')
+        section_id = validated_data.pop('section_id')
+        
+        validated_data['user'] = User.objects.get(id=user_id)
+        validated_data['section'] = Section.objects.get(id=section_id)
+        
+        return super().create(validated_data)
+    
+    def update(self, instance, validated_data):
+        # Remove user_id and section_id from validated_data if present
+        validated_data.pop('user_id', None)
+        validated_data.pop('section_id', None)
+        
+        return super().update(instance, validated_data)
+
+
+class UserSectionPermissionsSerializer(serializers.ModelSerializer):
+    """Serializer showing a user with their section permissions"""
+    section_permissions = serializers.SerializerMethodField()
+    accessible_sections = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'full_name', 'role', 'role_display', 'section_permissions', 'accessible_sections')
+    
+    def get_section_permissions(self, obj):
+        permissions = obj.section_permissions.select_related('section').all()
+        return SectionPermissionSerializer(permissions, many=True, context=self.context).data
+    
+    def get_accessible_sections(self, obj):
+        sections = obj.get_accessible_sections()
+        return SectionSerializer(sections, many=True).data

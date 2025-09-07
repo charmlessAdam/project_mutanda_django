@@ -7,11 +7,15 @@ from .views import (
     ChangePasswordApi,
     logout_api,
     UserManagementViewSet,
-    UserActivityViewSet
+    UserActivityViewSet,
+    SectionViewSet,
+    SectionPermissionViewSet
 )
 
 router = DefaultRouter()
 router.register(r'manage-users', UserManagementViewSet, basename='manage-users')
+router.register(r'sections', SectionViewSet, basename='sections')
+router.register(r'section-permissions', SectionPermissionViewSet, basename='section-permissions')
 
 urlpatterns = [
     # Authentication endpoints

@@ -153,6 +153,39 @@ class User(AbstractUser):
             return children
         
         return get_children(self)
+    
+    def get_section_permission(self, section_name):
+        """Get user's permission for a specific section"""
+        try:
+            section_perm = self.section_permissions.get(section__name=section_name)
+            return section_perm.permission_level
+        except:
+            return 'no_access'
+    
+    def has_section_permission(self, section_name, required_level='read_only'):
+        """Check if user has required permission level for a section"""
+        if self.role == 'super_admin':
+            return True
+            
+        try:
+            section_perm = self.section_permissions.get(section__name=section_name)
+            return section_perm.has_permission(required_level)
+        except:
+            return False
+    
+    def can_access_section(self, section_name):
+        """Check if user can access a section at all"""
+        return self.has_section_permission(section_name, 'read_only')
+    
+    def get_accessible_sections(self):
+        """Get all sections this user can access"""
+        if self.role == 'super_admin':
+            from .models import Section
+            return Section.objects.filter(is_active=True)
+        
+        return [perm.section for perm in self.section_permissions.filter(
+            section__is_active=True
+        ).exclude(permission_level='no_access')]
 
 
 class UserActivity(models.Model):
@@ -205,3 +238,94 @@ class Department(models.Model):
     
     def __str__(self):
         return self.name
+
+
+class Section(models.Model):
+    """System sections/modules that can have permissions assigned"""
+    SECTION_CHOICES = [
+        ('medicine_management', 'Medicine Management'),
+        ('cattle_management', 'Cattle Management'), 
+        ('user_management', 'User Management'),
+        ('warehouse_storage', 'Warehouse Storage'),
+        ('reports', 'Reports'),
+        ('settings', 'Settings'),
+    ]
+    
+    name = models.CharField(max_length=50, choices=SECTION_CHOICES, unique=True)
+    display_name = models.CharField(max_length=100)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    def __str__(self):
+        return self.display_name
+    
+    class Meta:
+        ordering = ['display_name']
+
+
+class SectionPermission(models.Model):
+    """User permissions for specific system sections"""
+    PERMISSION_CHOICES = [
+        ('no_access', 'No Access'),
+        ('read_only', 'Read Only'),
+        ('add_records', 'Add Records'),
+        ('edit_records', 'Edit Records'), 
+        ('full_access', 'Full Access'),
+    ]
+    
+    # Permission hierarchy levels (higher number = more permissions)
+    PERMISSION_HIERARCHY = {
+        'no_access': 0,
+        'read_only': 1,
+        'add_records': 2,
+        'edit_records': 3,
+        'full_access': 4,
+    }
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='section_permissions')
+    section = models.ForeignKey(Section, on_delete=models.CASCADE, related_name='user_permissions')
+    permission_level = models.CharField(max_length=20, choices=PERMISSION_CHOICES, default='no_access')
+    granted_by = models.ForeignKey(
+        User, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        related_name='granted_permissions',
+        help_text="User who granted this permission"
+    )
+    granted_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    notes = models.TextField(blank=True, help_text="Optional notes about this permission")
+    
+    class Meta:
+        unique_together = ['user', 'section']
+        ordering = ['section__display_name', 'user__username']
+    
+    def __str__(self):
+        return f"{self.user.username} - {self.section.display_name} ({self.get_permission_level_display()})"
+    
+    @property
+    def permission_level_numeric(self):
+        """Get numeric level for permission hierarchy"""
+        return self.PERMISSION_HIERARCHY.get(self.permission_level, 0)
+    
+    def has_permission(self, required_level):
+        """Check if user has at least the required permission level"""
+        required_numeric = self.PERMISSION_HIERARCHY.get(required_level, 0)
+        return self.permission_level_numeric >= required_numeric
+    
+    def can_read(self):
+        """Check if user can read data in this section"""
+        return self.has_permission('read_only')
+    
+    def can_add(self):
+        """Check if user can add records in this section"""
+        return self.has_permission('add_records')
+    
+    def can_edit(self):
+        """Check if user can edit records in this section"""
+        return self.has_permission('edit_records')
+    
+    def can_delete(self):
+        """Check if user can delete records in this section"""
+        return self.has_permission('full_access')
