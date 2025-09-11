@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'users',
     'medicine',
     'cattle',
+    'orders',
 ]
 
 REST_FRAMEWORK = {

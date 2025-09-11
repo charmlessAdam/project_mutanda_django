@@ -1,69 +1,115 @@
 from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
+from django.db import transaction
 
 User = get_user_model()
 
 class Command(BaseCommand):
-    help = 'Create test users with different roles'
+    help = 'Create test users for order workflow testing'
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--reset',
+            action='store_true',
+            help='Delete existing test users first',
+        )
 
     def handle(self, *args, **options):
         test_users = [
             {
-                'username': 'test',
-                'password': 'test',
-                'email': 'test@example.com',
-                'first_name': 'Test',
-                'last_name': 'Manager',
-                'role': 'manager',
-                'phone': '+1 (555) 123-4567',
-                'location': 'New York, NY',
-                'bio': 'Manager at Project Mutanda, focusing on agricultural operations and livestock management.'
+                'username': 'superadmin',
+                'email': 'superadmin@example.com',
+                'password': 'admin123',
+                'role': 'super_admin',
+                'first_name': 'Super',
+                'last_name': 'Admin',
+                'department': 'Administration'
             },
             {
-                'username': 'warehouse',
-                'password': 'warehouse',
-                'email': 'warehouse@example.com',
-                'first_name': 'Warehouse',
-                'last_name': 'Worker',
-                'role': 'warehouse_worker',
-                'phone': '+1 (555) 234-5678',
-                'location': 'Chicago, IL',
-                'bio': 'Warehouse worker responsible for inventory and stock management.'
+                'username': 'admin',
+                'email': 'admin@example.com', 
+                'password': 'admin123',
+                'role': 'admin',
+                'first_name': 'John',
+                'last_name': 'Admin',
+                'department': 'Administration'
             },
             {
-                'username': 'operator',
-                'password': 'operator',
-                'email': 'operator@example.com',
-                'first_name': 'System',
-                'last_name': 'Operator',
+                'username': 'financemanager',
+                'email': 'finance@example.com',
+                'password': 'admin123', 
+                'role': 'finance_manager',
+                'first_name': 'Sarah',
+                'last_name': 'Finance',
+                'department': 'Finance'
+            },
+            {
+                'username': 'veterinary',
+                'email': 'vet@example.com',
+                'password': 'admin123',
+                'role': 'head_veterinary', 
+                'first_name': 'Dr. Mike',
+                'last_name': 'Veterinary',
+                'department': 'Veterinary'
+            },
+            {
+                'username': 'regularuser',
+                'email': 'user@example.com',
+                'password': 'admin123',
                 'role': 'operator',
-                'phone': '+1 (555) 345-6789',
-                'location': 'Los Angeles, CA',
-                'bio': 'System operator managing daily operations and analytics.'
+                'first_name': 'Jane',
+                'last_name': 'Operator',
+                'department': 'Operations'
             }
         ]
 
-        for user_data in test_users:
-            username = user_data['username']
-            if User.objects.filter(username=username).exists():
-                self.stdout.write(
-                    self.style.WARNING(f'User "{username}" already exists, skipping...')
+        if options['reset']:
+            self.stdout.write('Deleting existing test users...')
+            User.objects.filter(username__in=[user['username'] for user in test_users]).delete()
+
+        with transaction.atomic():
+            created_count = 0
+            for user_data in test_users:
+                user, created = User.objects.get_or_create(
+                    username=user_data['username'],
+                    defaults={
+                        'email': user_data['email'],
+                        'role': user_data['role'],
+                        'first_name': user_data['first_name'],
+                        'last_name': user_data['last_name'],
+                        'department': user_data['department']
+                    }
                 )
-                continue
-            
-            password = user_data.pop('password')
-            user = User.objects.create_user(**user_data)
-            user.set_password(password)
-            user.save()
-            
-            self.stdout.write(
-                self.style.SUCCESS(f'Successfully created user "{username}" with role "{user.role}"')
-            )
+                
+                if created:
+                    user.set_password(user_data['password'])
+                    user.save()
+                    created_count += 1
+                    self.stdout.write(
+                        self.style.SUCCESS(f'✓ Created {user_data["role"]} user: {user_data["username"]}')
+                    )
+                else:
+                    self.stdout.write(
+                        self.style.WARNING(f'- User already exists: {user_data["username"]}')
+                    )
 
         self.stdout.write(
-            self.style.SUCCESS('\nTest users created successfully!')
+            self.style.SUCCESS(f'\nCreated {created_count} new test users.')
         )
-        self.stdout.write('Login credentials:')
-        self.stdout.write('- Manager: test / test')
-        self.stdout.write('- Warehouse Worker: warehouse / warehouse')
-        self.stdout.write('- System Operator: operator / operator')
+        
+        self.stdout.write('\n' + '='*60)
+        self.stdout.write('TEST USER CREDENTIALS:')
+        self.stdout.write('='*60)
+        for user_data in test_users:
+            self.stdout.write(f'Role: {user_data["role"]}')
+            self.stdout.write(f'Username: {user_data["username"]}')
+            self.stdout.write(f'Password: {user_data["password"]}')
+            self.stdout.write(f'Name: {user_data["first_name"]} {user_data["last_name"]}')
+            self.stdout.write('-' * 30)
+        
+        self.stdout.write('\nTESTING WORKFLOW:')
+        self.stdout.write('1. Login as "veterinary" → Create medicine orders')
+        self.stdout.write('2. Login as "admin" → Approve orders in SuperAdmin dashboard')
+        self.stdout.write('3. Login as "financemanager" → Give final approval')
+        self.stdout.write('4. Login as "superadmin" → View all activities in Order Oversight')
+        self.stdout.write('='*60)

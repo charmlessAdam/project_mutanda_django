@@ -6,6 +6,8 @@ class User(AbstractUser):
     ROLE_CHOICES = [
         ('super_admin', 'Super Admin'),
         ('admin', 'Admin'),
+        ('finance_manager', 'Finance Manager'),
+        ('head_veterinary', 'Head Veterinary'),
         ('manager', 'Manager'),
         ('operator', 'Operator'),
         ('warehouse_worker', 'Warehouse Worker'),
@@ -17,6 +19,8 @@ class User(AbstractUser):
         'viewer': 1,
         'warehouse_worker': 2,
         'operator': 3,
+        'head_veterinary': 4,
+        'finance_manager': 4,
         'manager': 4,
         'admin': 5,
         'super_admin': 6,
@@ -24,8 +28,10 @@ class User(AbstractUser):
     
     # Define which roles can manage which roles
     MANAGEMENT_PERMISSIONS = {
-        'super_admin': ['admin', 'manager', 'operator', 'warehouse_worker', 'viewer'],
-        'admin': ['manager', 'operator', 'warehouse_worker', 'viewer'],
+        'super_admin': ['admin', 'finance_manager', 'head_veterinary', 'manager', 'operator', 'warehouse_worker', 'viewer'],
+        'admin': ['finance_manager', 'head_veterinary', 'manager', 'operator', 'warehouse_worker', 'viewer'],
+        'finance_manager': ['operator', 'warehouse_worker', 'viewer'],
+        'head_veterinary': ['operator', 'warehouse_worker', 'viewer'],
         'manager': ['operator', 'warehouse_worker', 'viewer'],
         'operator': ['warehouse_worker', 'viewer'],
         'warehouse_worker': [],
