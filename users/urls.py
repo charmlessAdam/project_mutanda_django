@@ -9,11 +9,13 @@ from .views import (
     UserManagementViewSet,
     UserActivityViewSet,
     SectionViewSet,
-    SectionPermissionViewSet
+    SectionPermissionViewSet,
+    DepartmentViewSet
 )
 
 router = DefaultRouter()
 router.register(r'manage-users', UserManagementViewSet, basename='manage-users')
+router.register(r'departments', DepartmentViewSet, basename='departments')
 router.register(r'sections', SectionViewSet, basename='sections')
 router.register(r'section-permissions', SectionPermissionViewSet, basename='section-permissions')
 

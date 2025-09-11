@@ -232,10 +232,47 @@ class UserActivitySerializer(serializers.ModelSerializer):
 
 class DepartmentSerializer(serializers.ModelSerializer):
     head = UserBasicSerializer(read_only=True)
+    head_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     
     class Meta:
         model = Department
-        fields = ('id', 'name', 'description', 'head', 'created_at')
+        fields = ('id', 'name', 'description', 'head', 'head_id', 'created_at')
+    
+    def validate_head_id(self, value):
+        if value is not None:
+            try:
+                head_user = User.objects.get(id=value)
+                # Check if the user can be a department head (should be manager or higher)
+                if head_user.role_level < 4:  # Manager level is 4
+                    raise serializers.ValidationError("Only managers or higher can be department heads.")
+                return value
+            except User.DoesNotExist:
+                raise serializers.ValidationError("User not found.")
+        return None
+    
+    def create(self, validated_data):
+        head_id = validated_data.pop('head_id', None)
+        department = Department.objects.create(**validated_data)
+        
+        if head_id:
+            department.head = User.objects.get(id=head_id)
+            department.save()
+        
+        return department
+    
+    def update(self, instance, validated_data):
+        head_id = validated_data.pop('head_id', None)
+        
+        # Update other fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        # Update head if provided
+        if head_id is not None:
+            instance.head = User.objects.get(id=head_id) if head_id else None
+        
+        instance.save()
+        return instance
 
 
 class SectionSerializer(serializers.ModelSerializer):

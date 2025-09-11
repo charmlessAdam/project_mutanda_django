@@ -28,7 +28,7 @@ class OrderPermission(permissions.BasePermission):
             return False
         
         # Allow all authenticated users to view their own orders and create new ones
-        if view.action in ['list', 'create', 'retrieve']:
+        if view.action in ['list', 'create', 'retrieve', 'dashboard_stats']:
             return True
             
         # Admin and super_admin can approve, reject, view all
@@ -43,8 +43,8 @@ class OrderPermission(permissions.BasePermission):
         if view.action in ['submit_revision']:
             return request.user.role in ['head_veterinary', 'veterinary', 'super_admin']
             
-        # Super admin can access everything including delete
-        if view.action in ['superadmin_dashboard', 'activity_log', 'bulk_actions', 'destroy']:
+        # Super admin can access everything including delete and complete orders
+        if view.action in ['superadmin_dashboard', 'activity_log', 'bulk_actions', 'destroy', 'complete']:
             return request.user.role == 'super_admin'
             
         return False
@@ -569,6 +569,9 @@ class OrderViewSet(viewsets.ModelViewSet):
     def complete(self, request, pk=None):
         """Mark order as completed"""
         order = self.get_object()
+        
+        # Debug: Log user role
+        print(f"DEBUG: User {request.user.username} with role '{request.user.role}' attempting to complete order {order.id}")
         
         if order.status != 'approved_by_finance':
             return Response(

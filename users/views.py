@@ -550,3 +550,161 @@ class SectionPermissionViewSet(ModelViewSet):
             'sections': [{'name': s.name, 'display_name': s.display_name} for s in sections],
             'matrix': matrix
         })
+
+
+class DepartmentViewSet(ModelViewSet):
+    """Manage departments (Super Admin only)"""
+    serializer_class = DepartmentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """Return all departments"""
+        return Department.objects.all().select_related('head').order_by('name')
+    
+    def get_permissions(self):
+        """Only super admins can create, update, or delete departments"""
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            permission_classes = [permissions.IsAuthenticated]
+            if not self.request.user.role == 'super_admin':
+                raise permissions.PermissionDenied("Only super admins can manage departments.")
+        else:
+            permission_classes = [permissions.IsAuthenticated]
+        
+        return [permission() for permission in permission_classes]
+    
+    def create(self, request, *args, **kwargs):
+        """Create a new department"""
+        if request.user.role != 'super_admin':
+            return Response({
+                'success': False,
+                'error': 'Only super admins can create departments.'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            department = serializer.save()
+            
+            # Log activity if there's a head assigned
+            if department.head:
+                UserActivity.objects.create(
+                    performed_by=request.user,
+                    target_user=department.head,
+                    action='updated',
+                    description=f"Assigned as head of department: {department.name}",
+                    new_values={'department_head': department.name},
+                    ip_address=request.META.get('REMOTE_ADDR')
+                )
+            
+            return Response({
+                'success': True,
+                'message': f'Department "{department.name}" created successfully.',
+                'department': serializer.data
+            }, status=status.HTTP_201_CREATED)
+        
+        return Response({
+            'success': False,
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    def update(self, request, *args, **kwargs):
+        """Update a department"""
+        if request.user.role != 'super_admin':
+            return Response({
+                'success': False,
+                'error': 'Only super admins can update departments.'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        department = self.get_object()
+        old_head = department.head
+        
+        serializer = self.get_serializer(department, data=request.data, partial=kwargs.get('partial', False))
+        if serializer.is_valid():
+            updated_department = serializer.save()
+            
+            # Log activity if head changed
+            if old_head != updated_department.head:
+                if old_head:
+                    UserActivity.objects.create(
+                        performed_by=request.user,
+                        target_user=old_head,
+                        action='updated',
+                        description=f"Removed as head of department: {updated_department.name}",
+                        old_values={'department_head': updated_department.name},
+                        ip_address=request.META.get('REMOTE_ADDR')
+                    )
+                
+                if updated_department.head:
+                    UserActivity.objects.create(
+                        performed_by=request.user,
+                        target_user=updated_department.head,
+                        action='updated',
+                        description=f"Assigned as head of department: {updated_department.name}",
+                        new_values={'department_head': updated_department.name},
+                        ip_address=request.META.get('REMOTE_ADDR')
+                    )
+            
+            return Response({
+                'success': True,
+                'message': f'Department "{updated_department.name}" updated successfully.',
+                'department': serializer.data
+            })
+        
+        return Response({
+            'success': False,
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    def destroy(self, request, *args, **kwargs):
+        """Delete a department"""
+        if request.user.role != 'super_admin':
+            return Response({
+                'success': False,
+                'error': 'Only super admins can delete departments.'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        department = self.get_object()
+        department_name = department.name
+        
+        # Check if any users are assigned to this department
+        users_count = User.objects.filter(department=department_name).count()
+        if users_count > 0:
+            return Response({
+                'success': False,
+                'error': f'Cannot delete department "{department_name}" because it has {users_count} user(s) assigned to it. Please reassign users first.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Log activity if there was a head
+        if department.head:
+            UserActivity.objects.create(
+                performed_by=request.user,
+                target_user=department.head,
+                action='updated',
+                description=f"Department deleted: {department.name} (was department head)",
+                old_values={'department_head': department.name},
+                ip_address=request.META.get('REMOTE_ADDR')
+            )
+        
+        department.delete()
+        
+        return Response({
+            'success': True,
+            'message': f'Department "{department_name}" deleted successfully.'
+        }, status=status.HTTP_204_NO_CONTENT)
+    
+    @action(detail=False, methods=['get'])
+    def list_with_users(self, request):
+        """Get departments with their users count"""
+        departments = self.get_queryset()
+        
+        department_data = []
+        for dept in departments:
+            users_count = User.objects.filter(department=dept.name).count()
+            dept_serializer = self.get_serializer(dept)
+            dept_data = dept_serializer.data
+            dept_data['users_count'] = users_count
+            department_data.append(dept_data)
+        
+        return Response({
+            'success': True,
+            'departments': department_data
+        })
