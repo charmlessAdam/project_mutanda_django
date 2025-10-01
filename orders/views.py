@@ -10,11 +10,12 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from .models import Order, OrderApproval, OrderActivity, OrderComment, OrderNotification
+from .models import Order, OrderApproval, OrderActivity, OrderComment, OrderNotification, QuoteOption
 from .serializers import (
     OrderListSerializer, OrderDetailSerializer, OrderCreateSerializer,
     OrderApprovalActionSerializer, OrderCommentCreateSerializer,
-    OrderNotificationSerializer, SuperAdminOrderDetailSerializer
+    OrderNotificationSerializer, SuperAdminOrderDetailSerializer,
+    SubmitQuotesSerializer, QuoteOptionSerializer
 )
 
 User = get_user_model()
@@ -26,54 +27,69 @@ class OrderPermission(permissions.BasePermission):
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
-        
+
+        # Super admin can do everything
+        if request.user.role == 'super_admin':
+            return True
+
         # Allow all authenticated users to view their own orders and create new ones
         if view.action in ['list', 'create', 'retrieve', 'dashboard_stats']:
             return True
-            
-        # Admin and super_admin can approve, reject, view all
-        if view.action in ['approve', 'reject', 'admin_dashboard']:
-            return request.user.role in ['admin', 'super_admin']
-            
-        # Finance managers can approve finance stage
-        if view.action in ['finance_approve', 'finance_reject']:
-            return request.user.role in ['finance_manager', 'super_admin']
-            
+
+        # Manager can approve initial orders and quotes
+        if view.action in ['manager_approve', 'approve_quote', 'manager_dashboard']:
+            return request.user.role == 'manager'
+
+        # Procurement can submit quotes
+        if view.action in ['submit_quote', 'procurement_dashboard']:
+            return request.user.role == 'procurement'
+
+        # Finance managers can complete payments
+        if view.action in ['complete_payment', 'finance_dashboard']:
+            return request.user.role == 'finance_manager'
+
         # Veterinary users can submit revisions
         if view.action in ['submit_revision']:
-            return request.user.role in ['head_veterinary', 'veterinary', 'super_admin']
-            
-        # Super admin can access everything including delete and complete orders
-        if view.action in ['superadmin_dashboard', 'activity_log', 'bulk_actions', 'destroy', 'complete']:
-            return request.user.role == 'super_admin'
-            
+            return request.user.role in ['head_veterinary', 'veterinary']
+
+        # Keep old approve/finance_approve for backward compatibility
+        if view.action in ['approve', 'reject', 'admin_dashboard']:
+            return request.user.role in ['admin', 'manager']
+
+        if view.action in ['finance_approve', 'finance_reject']:
+            return request.user.role == 'finance_manager'
+
         return False
     
     def has_object_permission(self, request, view, obj):
+        # Super admin can do everything
+        if request.user.role == 'super_admin':
+            return True
+
         # Users can view their own orders
         if view.action == 'retrieve' and obj.requested_by == request.user:
             return True
-            
-        # Admins and super_admins can access all orders
-        if request.user.role in ['admin', 'super_admin']:
+
+        # Admins and managers can access all orders
+        if request.user.role in ['admin', 'manager']:
             return True
-            
-        # Finance managers can view orders in finance approval stage
-        if request.user.role == 'finance_manager' and obj.status == 'approved_by_admin':
+
+        # Procurement can view orders that need quotes
+        if request.user.role == 'procurement' and obj.status == 'approved_by_manager':
             return True
-            
+
+        # Finance managers can view orders ready for payment
+        if request.user.role == 'finance_manager' and obj.status == 'quote_approved_by_manager':
+            return True
+
         # Submit revision permissions - original requester or veterinary users for medicine orders
         if view.action == 'submit_revision':
             can_revise = (
-                obj.requested_by == request.user or 
+                obj.requested_by == request.user or
                 (request.user.role in ['head_veterinary', 'veterinary'] and obj.order_type == 'medicine')
             )
             return can_revise
-            
-        # Complete order permissions - only super_admin can finalize orders
-        if view.action == 'complete':
-            return request.user.role == 'super_admin'
-            
+
         return False
 
 def log_order_activity(order, user, activity_type, description, request=None, **metadata):
@@ -217,12 +233,12 @@ class OrderViewSet(viewsets.ModelViewSet):
                 order_data=serializer.validated_data
             )
             
-            # Create notifications for admins
-            admins = User.objects.filter(role__in=['admin', 'super_admin'])
-            for admin in admins:
+            # Create notifications for managers (NEW WORKFLOW)
+            managers = User.objects.filter(role__in=['manager', 'super_admin'])
+            for manager in managers:
                 create_notification(
                     order=order,
-                    recipient=admin,
+                    recipient=manager,
                     notification_type='approval_needed',
                     title=f'New Order Requires Approval: {order.order_number}',
                     message=f'{order.requested_by.get_full_name()} has requested approval for {order.title} (Estimated cost: ${order.estimated_cost})'
@@ -395,7 +411,479 @@ class OrderViewSet(viewsets.ModelViewSet):
                 )
         
         return Response({'message': f'Order {action_type} successfully'})
-    
+
+    @action(detail=True, methods=['post'])
+    def manager_approve(self, request, pk=None):
+        """Manager initial approval action - NEW WORKFLOW"""
+        order = self.get_object()
+        serializer = OrderApprovalActionSerializer(data=request.data)
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        if order.status != 'pending':
+            return Response(
+                {'error': 'Order is not in pending status'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        action_type = serializer.validated_data['action']
+        notes = serializer.validated_data.get('notes', '')
+
+        with transaction.atomic():
+            if action_type == 'approved':
+                # Create approval record
+                approval, created = OrderApproval.objects.update_or_create(
+                    order=order,
+                    stage='manager_initial',
+                    defaults={
+                        'approver': request.user,
+                        'action': 'approved',
+                        'notes': notes,
+                        'requires_revision': False,
+                        'revision_completed': False
+                    }
+                )
+
+                # Update order status
+                old_status = order.status
+                order.status = 'approved_by_manager'
+                order.save()
+
+                # Log activity
+                log_order_activity(
+                    order=order,
+                    user=request.user,
+                    activity_type='manager_approved',
+                    description=f"Order approved by manager {request.user.get_full_name()}",
+                    request=request,
+                    previous_status=old_status,
+                    new_status=order.status,
+                    notes=notes
+                )
+
+                # Notify procurement team
+                procurement_users = User.objects.filter(role='procurement')
+                for proc_user in procurement_users:
+                    create_notification(
+                        order=order,
+                        recipient=proc_user,
+                        notification_type='approval_needed',
+                        title=f'Quote Needed: {order.order_number}',
+                        message=f'Manager-approved order for {order.title} needs procurement quote (Estimated: ${order.estimated_cost})'
+                    )
+
+                # Notify requester
+                create_notification(
+                    order=order,
+                    recipient=order.requested_by,
+                    notification_type='approved',
+                    title=f'Order Approved by Manager: {order.order_number}',
+                    message=f'Your order for {order.title} has been approved by manager and sent to procurement'
+                )
+
+            elif action_type == 'rejected':
+                # Create rejection record
+                approval, created = OrderApproval.objects.update_or_create(
+                    order=order,
+                    stage='manager_initial',
+                    defaults={
+                        'approver': request.user,
+                        'action': 'rejected',
+                        'notes': notes,
+                        'requires_revision': False,
+                        'revision_completed': False
+                    }
+                )
+
+                # Update order
+                old_status = order.status
+                order.status = 'rejected'
+                order.rejection_reason = notes
+                order.save()
+
+                # Log activity
+                log_order_activity(
+                    order=order,
+                    user=request.user,
+                    activity_type='manager_rejected',
+                    description=f"Order rejected by manager {request.user.get_full_name()}: {notes}",
+                    request=request,
+                    previous_status=old_status,
+                    new_status=order.status,
+                    rejection_reason=notes
+                )
+
+                # Notify requester
+                create_notification(
+                    order=order,
+                    recipient=order.requested_by,
+                    notification_type='rejected',
+                    title=f'Order Rejected: {order.order_number}',
+                    message=f'Your order for {order.title} has been rejected by manager. Reason: {notes}'
+                )
+
+            elif action_type == 'revision_requested':
+                # Update order with revision information
+                old_status = order.status
+                order.status = 'revision_requested_by_manager'
+                order.revision_reason = notes
+                order.revision_requested_by = request.user
+                order.revision_requested_at = timezone.now()
+                order.save()
+
+                # Create revision request approval record
+                approval, created = OrderApproval.objects.update_or_create(
+                    order=order,
+                    stage='manager_initial',
+                    defaults={
+                        'approver': request.user,
+                        'action': 'revision_requested',
+                        'notes': notes,
+                        'requires_revision': True,
+                        'revision_completed': False
+                    }
+                )
+
+                # Log activity
+                log_order_activity(
+                    order=order,
+                    user=request.user,
+                    activity_type='revision_requested',
+                    description=f"Revision requested by manager {request.user.get_full_name()}: {notes}",
+                    request=request,
+                    previous_status=old_status,
+                    new_status=order.status,
+                    revision_notes=notes
+                )
+
+                # Notify requester
+                create_notification(
+                    order=order,
+                    recipient=order.requested_by,
+                    notification_type='revision_requested',
+                    title=f'Order Revision Required: {order.order_number}',
+                    message=f'Manager has requested revisions to your order for {order.title}. Notes: {notes}'
+                )
+
+        return Response({'message': f'Order {action_type} by manager successfully'})
+
+    @action(detail=True, methods=['post'])
+    def submit_quote(self, request, pk=None):
+        """Procurement submits multiple quote options - NEW WORKFLOW"""
+        order = self.get_object()
+
+        # Allow quote submission/update when manager approved OR quotes already submitted (but not yet approved)
+        if order.status not in ['approved_by_manager', 'procurement_quote_submitted']:
+            return Response(
+                {'error': 'Order must be manager-approved before quote submission'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate quote data
+        serializer = SubmitQuotesSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            # Delete any existing quote options for this order
+            order.quote_options.all().delete()
+
+            # Create new quote options
+            quotes_data = serializer.validated_data['quotes']
+            created_quotes = []
+            recommended_quote = None
+
+            for quote_data in quotes_data:
+                quote = QuoteOption.objects.create(
+                    order=order,
+                    submitted_by=request.user,
+                    **quote_data
+                )
+                created_quotes.append(quote)
+
+                if quote.is_recommended:
+                    recommended_quote = quote
+
+            # Update order status
+            old_status = order.status
+            order.quote_submitted_by = request.user
+            order.quote_submitted_at = timezone.now()
+            order.status = 'procurement_quote_submitted'
+            order.save()
+
+            # Create procurement approval record
+            OrderApproval.objects.update_or_create(
+                order=order,
+                stage='procurement',
+                defaults={
+                    'approver': request.user,
+                    'action': 'approved',
+                    'notes': f'{len(created_quotes)} quote options submitted',
+                    'requires_revision': False,
+                    'revision_completed': False
+                }
+            )
+
+            # Log activity
+            quote_summary = ', '.join([f"${q.quoted_amount} from {q.supplier_name}" for q in created_quotes[:3]])
+            if len(created_quotes) > 3:
+                quote_summary += f" and {len(created_quotes) - 3} more"
+
+            log_order_activity(
+                order=order,
+                user=request.user,
+                activity_type='quote_submitted',
+                description=f"Quotes submitted by {request.user.get_full_name()} - {quote_summary}. Recommended: ${recommended_quote.quoted_amount} from {recommended_quote.supplier_name}",
+                request=request,
+                previous_status=old_status,
+                new_status=order.status,
+                quote_count=len(created_quotes),
+                recommended_supplier=recommended_quote.supplier_name if recommended_quote else None,
+                recommended_amount=float(recommended_quote.quoted_amount) if recommended_quote else None
+            )
+
+            # Notify managers
+            managers = User.objects.filter(role='manager')
+            for manager in managers:
+                create_notification(
+                    order=order,
+                    recipient=manager,
+                    notification_type='approval_needed',
+                    title=f'Quote Approval Needed: {order.order_number}',
+                    message=f'{len(created_quotes)} quotes submitted for {order.title}. Recommended: ${recommended_quote.quoted_amount} from {recommended_quote.supplier_name}'
+                )
+
+        # Return created quotes
+        return Response({
+            'message': 'Quotes submitted successfully',
+            'quotes': QuoteOptionSerializer(created_quotes, many=True).data
+        })
+
+    @action(detail=True, methods=['post'])
+    def approve_quote(self, request, pk=None):
+        """Manager selects and approves a quote option - NEW WORKFLOW"""
+        order = self.get_object()
+
+        if order.status != 'procurement_quote_submitted':
+            return Response(
+                {'error': 'Order must have submitted quotes for approval'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        action_type = request.data.get('action')
+        selected_quote_id = request.data.get('selected_quote_id')
+        notes = request.data.get('notes', '')
+
+        if not action_type:
+            return Response(
+                {'error': 'Action is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        with transaction.atomic():
+            if action_type == 'approved':
+                # Validate selected quote
+                if not selected_quote_id:
+                    return Response(
+                        {'error': 'selected_quote_id is required when approving'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                try:
+                    selected_quote = QuoteOption.objects.get(id=selected_quote_id, order=order)
+                except QuoteOption.DoesNotExist:
+                    return Response(
+                        {'error': 'Selected quote not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                # Mark selected quote
+                order.quote_options.update(is_selected=False)  # Clear all selections
+                selected_quote.is_selected = True
+                selected_quote.save()
+
+                # Update order with selected quote details
+                order.quote_amount = selected_quote.quoted_amount
+                order.quote_supplier = selected_quote.supplier_name
+                order.quote_notes = selected_quote.notes or ''
+
+                # Create quote approval record
+                approval, created = OrderApproval.objects.update_or_create(
+                    order=order,
+                    stage='manager_quote',
+                    defaults={
+                        'approver': request.user,
+                        'action': 'approved',
+                        'notes': notes,
+                        'requires_revision': False,
+                        'revision_completed': False
+                    }
+                )
+
+                # Update order status
+                old_status = order.status
+                order.status = 'quote_approved_by_manager'
+                order.save()
+
+                # Log activity
+                log_order_activity(
+                    order=order,
+                    user=request.user,
+                    activity_type='quote_approved',
+                    description=f"Quote approved by manager {request.user.get_full_name()} - Selected ${selected_quote.quoted_amount} from {selected_quote.supplier_name}",
+                    request=request,
+                    previous_status=old_status,
+                    new_status=order.status,
+                    selected_quote_id=selected_quote.id,
+                    selected_supplier=selected_quote.supplier_name,
+                    selected_amount=float(selected_quote.quoted_amount),
+                    notes=notes
+                )
+
+                # Notify finance team
+                finance_users = User.objects.filter(role='finance_manager')
+                for fin_user in finance_users:
+                    create_notification(
+                        order=order,
+                        recipient=fin_user,
+                        notification_type='approval_needed',
+                        title=f'Payment Needed: {order.order_number}',
+                        message=f'Quote approved for {order.title} - ${selected_quote.quoted_amount} to {selected_quote.supplier_name}'
+                    )
+
+                # Notify requester
+                create_notification(
+                    order=order,
+                    recipient=order.requested_by,
+                    notification_type='approved',
+                    title=f'Quote Approved: {order.order_number}',
+                    message=f'Quote for {order.title} approved - ${selected_quote.quoted_amount} from {selected_quote.supplier_name}. Sent to finance for payment.'
+                )
+
+                # Notify procurement
+                if order.quote_submitted_by:
+                    create_notification(
+                        order=order,
+                        recipient=order.quote_submitted_by,
+                        notification_type='approved',
+                        title=f'Quote Approved: {order.order_number}',
+                        message=f'Your quote from {selected_quote.supplier_name} (${selected_quote.quoted_amount}) was selected and approved.'
+                    )
+
+            elif action_type == 'rejected':
+                # Reject all quotes and send back to procurement
+                old_status = order.status
+                order.status = 'approved_by_manager'  # Back to procurement
+                order.save()
+
+                # Log activity
+                log_order_activity(
+                    order=order,
+                    user=request.user,
+                    activity_type='quote_rejected',
+                    description=f"All quotes rejected by manager {request.user.get_full_name()}: {notes}",
+                    request=request,
+                    previous_status=old_status,
+                    new_status=order.status,
+                    rejection_reason=notes
+                )
+
+                # Notify procurement
+                if order.quote_submitted_by:
+                    create_notification(
+                        order=order,
+                        recipient=order.quote_submitted_by,
+                        notification_type='revision_requested',
+                        title=f'Quotes Rejected: {order.order_number}',
+                        message=f'All quotes for {order.title} were rejected. Please submit new quotes. Reason: {notes}'
+                    )
+
+        return Response({'message': f'Quote {action_type} successfully'})
+
+    @action(detail=True, methods=['post'])
+    def complete_payment(self, request, pk=None):
+        """Finance completes payment - NEW WORKFLOW"""
+        order = self.get_object()
+
+        if order.status != 'quote_approved_by_manager':
+            return Response(
+                {'error': 'Order must have approved quote before payment'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get payment data
+        payment_amount = request.data.get('payment_amount')
+        payment_method = request.data.get('payment_method')
+        payment_reference = request.data.get('payment_reference')
+        payment_notes = request.data.get('payment_notes', '')
+
+        if not payment_amount:
+            return Response(
+                {'error': 'Payment amount is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        with transaction.atomic():
+            # Update order with payment details
+            old_status = order.status
+            order.payment_amount = payment_amount
+            order.payment_method = payment_method
+            order.payment_reference = payment_reference
+            order.payment_notes = payment_notes
+            order.payment_completed_by = request.user
+            order.payment_completed_at = timezone.now()
+            order.status = 'payment_completed'
+            order.save()
+
+            # Create finance approval record
+            OrderApproval.objects.update_or_create(
+                order=order,
+                stage='finance',
+                defaults={
+                    'approver': request.user,
+                    'action': 'approved',
+                    'notes': payment_notes,
+                    'requires_revision': False,
+                    'revision_completed': False
+                }
+            )
+
+            # Log activity
+            log_order_activity(
+                order=order,
+                user=request.user,
+                activity_type='payment_completed',
+                description=f"Payment completed by {request.user.get_full_name()} - ${payment_amount}",
+                request=request,
+                previous_status=old_status,
+                new_status=order.status,
+                payment_amount=float(payment_amount),
+                payment_method=payment_method,
+                payment_reference=payment_reference
+            )
+
+            # Notify requester
+            create_notification(
+                order=order,
+                recipient=order.requested_by,
+                notification_type='completed',
+                title=f'Payment Completed: {order.order_number}',
+                message=f'Payment of ${payment_amount} completed for {order.title}. Reference: {payment_reference}'
+            )
+
+            # Notify procurement
+            if order.quote_submitted_by:
+                create_notification(
+                    order=order,
+                    recipient=order.quote_submitted_by,
+                    notification_type='completed',
+                    title=f'Order Payment Completed: {order.order_number}',
+                    message=f'Payment completed for {order.title} - ${payment_amount} to {order.quote_supplier}'
+                )
+
+        return Response({'message': 'Payment completed successfully'})
+
     @action(detail=True, methods=['post'])
     def finance_approve(self, request, pk=None):
         """Finance manager approval action"""
@@ -567,15 +1055,17 @@ class OrderViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
-        """Mark order as completed"""
+        """Mark order as completed - finalize and move to history"""
         order = self.get_object()
-        
+
         # Debug: Log user role
         print(f"DEBUG: User {request.user.username} with role '{request.user.role}' attempting to complete order {order.id}")
-        
-        if order.status != 'approved_by_finance':
+
+        # NEW WORKFLOW: Check for payment_completed status
+        # OLD WORKFLOW: Check for approved_by_finance status (for backward compatibility)
+        if order.status not in ['payment_completed', 'approved_by_finance']:
             return Response(
-                {'error': 'Order must be fully approved before completion'}, 
+                {'error': 'Order must have payment completed before finalization'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         

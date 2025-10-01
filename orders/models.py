@@ -20,22 +20,25 @@ class Order(models.Model):
     ]
     
     STATUS_CHOICES = [
-        ('pending', 'Pending Admin Approval'),
-        ('approved_by_admin', 'Approved by Admin - Pending Finance'),
-        ('approved_by_finance', 'Fully Approved'),
+        ('pending', 'Pending Manager Approval'),
+        ('approved_by_manager', 'Approved by Manager - Pending Procurement'),
+        ('procurement_quote_submitted', 'Quote Submitted - Pending Manager Approval'),
+        ('quote_approved_by_manager', 'Quote Approved - Pending Finance Payment'),
+        ('payment_completed', 'Payment Completed'),
         ('rejected', 'Rejected'),
-        ('revision_requested_by_admin', 'Revision Requested by Admin'),
+        ('revision_requested_by_manager', 'Revision Requested by Manager'),
+        ('revision_requested_by_procurement', 'Revision Requested by Procurement'),
         ('revision_requested_by_finance', 'Revision Requested by Finance'),
-        ('revision_in_progress', 'Being Revised by Requester'),
         ('completed', 'Completed'),
         ('cancelled', 'Cancelled'),
     ]
     
     # Order identification
     order_number = models.CharField(max_length=20, unique=True, db_index=True)
-    
+
     # Order details
     order_type = models.CharField(max_length=20, choices=ORDER_TYPES)
+    item_name = models.CharField(max_length=200, blank=True, default='', help_text="Name of the item being ordered")
     title = models.CharField(max_length=200)
     description = models.TextField()
     quantity = models.PositiveIntegerField(validators=[MinValueValidator(1)])
@@ -43,13 +46,28 @@ class Order(models.Model):
     urgency = models.CharField(max_length=10, choices=URGENCY_LEVELS, default='medium')
     estimated_cost = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
     supplier = models.CharField(max_length=200, blank=True, null=True)
+
+    # Procurement quote details
+    quote_amount = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True, help_text="Quote amount from procurement")
+    quote_supplier = models.CharField(max_length=200, blank=True, null=True, help_text="Supplier quoted by procurement")
+    quote_notes = models.TextField(blank=True, null=True, help_text="Procurement quote notes")
+    quote_submitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='submitted_quotes')
+    quote_submitted_at = models.DateTimeField(blank=True, null=True)
+
+    # Payment details
+    payment_amount = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True, help_text="Actual payment amount")
+    payment_method = models.CharField(max_length=50, blank=True, null=True, help_text="Payment method used")
+    payment_reference = models.CharField(max_length=100, blank=True, null=True, help_text="Payment reference/transaction ID")
+    payment_notes = models.TextField(blank=True, null=True, help_text="Payment notes")
+    payment_completed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='completed_payments')
+    payment_completed_at = models.DateTimeField(blank=True, null=True)
     
     # Request information
     requested_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='requested_orders')
     request_date = models.DateTimeField(auto_now_add=True)
     
     # Status tracking
-    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='pending')
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='pending')
     rejection_reason = models.TextField(blank=True, null=True)
     revision_reason = models.TextField(blank=True, null=True, help_text="Reason for requesting revision")
     revision_requested_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='requested_revisions', help_text="User who requested the revision")
@@ -73,24 +91,60 @@ class Order(models.Model):
     
     @property
     def is_pending_approval(self):
-        return self.status in ['pending', 'approved_by_admin']
-    
+        return self.status in ['pending', 'approved_by_manager', 'procurement_quote_submitted', 'quote_approved_by_manager']
+
     @property
     def needs_revision(self):
-        return self.status in ['revision_requested_by_admin', 'revision_requested_by_finance', 'revision_in_progress']
-    
+        return self.status in ['revision_requested_by_manager', 'revision_requested_by_procurement', 'revision_requested_by_finance']
+
     @property
     def next_approver_role(self):
         if self.status == 'pending':
-            return 'admin'
-        elif self.status == 'approved_by_admin':
+            return 'manager'
+        elif self.status == 'approved_by_manager':
+            return 'procurement'
+        elif self.status == 'procurement_quote_submitted':
+            return 'manager'
+        elif self.status == 'quote_approved_by_manager':
             return 'finance_manager'
         return None
 
+class QuoteOption(models.Model):
+    """
+    Multiple quote options submitted by procurement
+    """
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='quote_options')
+    supplier_name = models.CharField(max_length=200)
+    supplier_address = models.TextField(blank=True, null=True, help_text="Supplier address")
+    buying_company = models.CharField(max_length=100, blank=True, null=True, help_text="Which company is buying")
+    quoted_amount = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+    delivery_time = models.CharField(max_length=100, blank=True, null=True, help_text="Estimated delivery time")
+    notes = models.TextField(blank=True, null=True)
+    is_recommended = models.BooleanField(default=False, help_text="Procurement's recommended option")
+    is_selected = models.BooleanField(default=False, help_text="Selected by manager")
+
+    # Tracking
+    submitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='submitted_quote_options')
+    submitted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['quoted_amount']  # Order by price, lowest first
+        indexes = [
+            models.Index(fields=['order', 'is_recommended']),
+            models.Index(fields=['order', 'is_selected']),
+        ]
+
+    def __str__(self):
+        recommended = " (RECOMMENDED)" if self.is_recommended else ""
+        selected = " [SELECTED]" if self.is_selected else ""
+        return f"{self.supplier_name} - ${self.quoted_amount}{recommended}{selected}"
+
 class OrderApproval(models.Model):
     APPROVAL_STAGES = [
-        ('admin', 'Admin Approval'),
-        ('finance', 'Finance Approval'),
+        ('manager_initial', 'Manager Initial Approval'),
+        ('procurement', 'Procurement Quote'),
+        ('manager_quote', 'Manager Quote Approval'),
+        ('finance', 'Finance Payment'),
     ]
     
     APPROVAL_ACTIONS = [
@@ -100,7 +154,7 @@ class OrderApproval(models.Model):
     ]
     
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='approvals')
-    stage = models.CharField(max_length=10, choices=APPROVAL_STAGES)
+    stage = models.CharField(max_length=20, choices=APPROVAL_STAGES)
     approver = models.ForeignKey(User, on_delete=models.CASCADE, related_name='order_approvals')
     action = models.CharField(max_length=20, choices=APPROVAL_ACTIONS)
     notes = models.TextField(blank=True, null=True)
@@ -130,9 +184,12 @@ class OrderActivity(models.Model):
         ('created', 'Order Created'),
         ('updated', 'Order Updated'),
         ('submitted', 'Submitted for Approval'),
-        ('admin_approved', 'Admin Approved'),
-        ('admin_rejected', 'Admin Rejected'),
-        ('finance_approved', 'Finance Approved'),
+        ('manager_approved', 'Manager Approved'),
+        ('manager_rejected', 'Manager Rejected'),
+        ('quote_submitted', 'Quote Submitted by Procurement'),
+        ('quote_approved', 'Quote Approved by Manager'),
+        ('quote_rejected', 'Quote Rejected by Manager'),
+        ('payment_completed', 'Payment Completed by Finance'),
         ('finance_rejected', 'Finance Rejected'),
         ('revision_requested', 'Revision Requested'),
         ('revision_submitted', 'Revision Submitted'),

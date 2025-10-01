@@ -39,6 +39,8 @@ class UserAdmin(BaseUserAdmin):
         qs = super().get_queryset(request)
         return qs.select_related('manager', 'created_by')
 
+        
+
 @admin.register(UserActivity)
 class UserActivityAdmin(admin.ModelAdmin):
     list_display = ('timestamp', 'performed_by', 'action', 'target_user', 'description')
