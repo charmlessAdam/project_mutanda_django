@@ -1,0 +1,10 @@
+Last deployed: 2025-01-10
+Commit: f8a153a - Enhance order management workflow and introduce quote options
+
+New endpoints added:
+- /api/orders/{id}/manager_approve/
+- /api/orders/{id}/submit_quote/
+- /api/orders/{id}/approve_quote/
+- /api/orders/{id}/complete_payment/
+
+These endpoints implement the new 4-stage order workflow.
