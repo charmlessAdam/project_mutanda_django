@@ -546,8 +546,7 @@ class SectionPermissionViewSet(ModelViewSet):
             })
         
         return Response({
-            'success': True,
-            'sections': [{'name': s.name, 'display_name': s.display_name} for s in sections],
+            'sections': [{'id': s.id, 'name': s.name, 'display_name': s.display_name} for s in sections],
             'matrix': matrix
         })
 

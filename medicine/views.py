@@ -62,7 +62,7 @@ class MedicineListCreateView(generics.ListCreateAPIView):
 class MedicineDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Medicine.objects.select_related('medicine_class', 'created_by').all()
     serializer_class = MedicineSerializer
-    permission_classes = [HasStoragePermission]
+    permission_classes = [permissions.IsAuthenticated]
 
 
 class StoragePermissionListCreateView(generics.ListCreateAPIView):
@@ -114,9 +114,11 @@ class StockTransactionListView(generics.ListAPIView):
 
 
 @api_view(['POST'])
-@permission_classes([HasStoragePermission])
+@permission_classes([permissions.IsAuthenticated])
 def adjust_stock(request):
     """Add or remove stock from a medicine item"""
+    from users.models import SectionPermission, Section
+    
     serializer = StockAdjustmentSerializer(data=request.data)
     
     if serializer.is_valid():
@@ -126,11 +128,27 @@ def adjust_stock(request):
         required_permission = 'add_stock' if data['transaction_type'] == 'add' else 'remove_stock'
         
         if request.user.role != 'super_admin':
-            has_permission = StoragePermission.objects.filter(
-                user=request.user,
-                permission_type__in=[required_permission, 'full_access'],
-                is_active=True
-            ).exists()
+            # Check section permission for medicine_management
+            try:
+                medicine_section = Section.objects.get(name='medicine_management')
+                section_permission = SectionPermission.objects.get(
+                    user=request.user,
+                    section=medicine_section
+                )
+                
+                permission_level = section_permission.permission_level
+                
+                # Check if user has required permission level
+                has_permission = False
+                if permission_level == 'full_access':
+                    has_permission = True
+                elif permission_level == 'edit_records':
+                    has_permission = True  # edit_records allows both add and remove
+                elif permission_level == 'add_records' and required_permission == 'add_stock':
+                    has_permission = True  # add_records only allows adding stock
+                
+            except (Section.DoesNotExist, SectionPermission.DoesNotExist):
+                has_permission = False
             
             if not has_permission:
                 return Response(
@@ -204,22 +222,44 @@ def get_users_without_storage_permission(request):
 
 
 @api_view(['GET'])
-@permission_classes([HasStoragePermission])
+@permission_classes([permissions.IsAuthenticated])
 def get_user_permissions(request):
-    """Get current user's storage permissions"""
+    """Get current user's medicine storage permissions"""
+    from users.models import SectionPermission, Section
+    
     if request.user.role == 'super_admin':
         return Response({
             'permissions': ['read', 'add_stock', 'remove_stock', 'full_access'],
             'is_super_admin': True
         })
     
-    permissions = StoragePermission.objects.filter(
-        user=request.user,
-        is_active=True
-    ).values_list('permission_type', flat=True)
+    # Get medicine_management section permissions
+    try:
+        medicine_section = Section.objects.get(name='medicine_management')
+        section_permission = SectionPermission.objects.get(
+            user=request.user,
+            section=medicine_section
+        )
+        
+        # Map section permission levels to medicine storage permissions
+        permission_level = section_permission.permission_level
+        if permission_level == 'full_access':
+            user_permissions = ['read', 'add_stock', 'remove_stock', 'full_access']
+        elif permission_level == 'edit_records':
+            user_permissions = ['read', 'add_stock', 'remove_stock']
+        elif permission_level == 'add_records':
+            user_permissions = ['read', 'add_stock']
+        elif permission_level == 'read_only':
+            user_permissions = ['read']
+        else:  # no_access
+            user_permissions = []
+            
+    except (Section.DoesNotExist, SectionPermission.DoesNotExist):
+        # No specific permission found, default to no access
+        user_permissions = []
     
     return Response({
-        'permissions': list(permissions),
+        'permissions': user_permissions,
         'is_super_admin': False
     })
 
