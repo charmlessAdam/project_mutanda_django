@@ -109,6 +109,28 @@ class Order(models.Model):
             return 'finance_manager'
         return None
 
+class OrderItem(models.Model):
+    """
+    Individual items within an order - supports multiple items per order
+    """
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
+    item_name = models.CharField(max_length=200, help_text='Name of the item')
+    is_custom_item = models.BooleanField(default=False, help_text='Whether this is a custom item not in predefined list')
+    quantity = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    unit = models.CharField(max_length=50, default='pieces')
+    estimated_cost = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))], null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['id']
+        indexes = [
+            models.Index(fields=['order', 'id']),
+        ]
+
+    def __str__(self):
+        return f"{self.item_name} ({self.quantity} {self.unit})"
+
 class QuoteOption(models.Model):
     """
     Multiple quote options submitted by procurement
@@ -138,6 +160,27 @@ class QuoteOption(models.Model):
         recommended = " (RECOMMENDED)" if self.is_recommended else ""
         selected = " [SELECTED]" if self.is_selected else ""
         return f"{self.supplier_name} - ${self.quoted_amount}{recommended}{selected}"
+
+class QuoteOptionItem(models.Model):
+    """
+    Individual item pricing within a quote option (for multi-item orders)
+    """
+    quote_option = models.ForeignKey(QuoteOption, on_delete=models.CASCADE, related_name='item_quotes')
+    order_item = models.ForeignKey(OrderItem, on_delete=models.CASCADE, related_name='quote_items')
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+    total_price = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+    availability = models.CharField(max_length=100, blank=True, null=True, help_text="Item availability status")
+    notes = models.TextField(blank=True, null=True, help_text="Item-specific notes")
+
+    class Meta:
+        ordering = ['order_item__id']
+        unique_together = ['quote_option', 'order_item']
+        indexes = [
+            models.Index(fields=['quote_option', 'order_item']),
+        ]
+
+    def __str__(self):
+        return f"{self.order_item.item_name} - ${self.unit_price}/unit (Total: ${self.total_price})"
 
 class OrderApproval(models.Model):
     APPROVAL_STAGES = [

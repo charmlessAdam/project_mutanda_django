@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import Order, OrderApproval, OrderActivity, OrderComment, OrderNotification
+from .models import Order, OrderItem, OrderApproval, OrderActivity, OrderComment, OrderNotification, QuoteOption, QuoteOptionItem
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
@@ -49,6 +49,19 @@ class OrderAdmin(admin.ModelAdmin):
         )
     status_display.short_description = 'Status'
 
+class OrderItemInline(admin.TabularInline):
+    model = OrderItem
+    extra = 0
+    fields = ['item_name', 'is_custom_item', 'quantity', 'unit', 'estimated_cost']
+    readonly_fields = []
+
+@admin.register(OrderItem)
+class OrderItemAdmin(admin.ModelAdmin):
+    list_display = ['id', 'order', 'item_name', 'is_custom_item', 'quantity', 'unit', 'estimated_cost']
+    list_filter = ['is_custom_item', 'unit']
+    search_fields = ['item_name', 'order__order_number']
+    ordering = ['order', 'id']
+
 @admin.register(OrderApproval)
 class OrderApprovalAdmin(admin.ModelAdmin):
     list_display = ['order', 'stage', 'action', 'approver', 'created_at']
@@ -88,3 +101,25 @@ class OrderNotificationAdmin(admin.ModelAdmin):
     search_fields = ['order__order_number', 'recipient__username', 'title', 'message']
     readonly_fields = ['created_at', 'read_at']
     ordering = ['-created_at']
+
+class QuoteOptionItemInline(admin.TabularInline):
+    model = QuoteOptionItem
+    extra = 0
+    fields = ['order_item', 'unit_price', 'total_price', 'availability', 'notes']
+    readonly_fields = []
+
+@admin.register(QuoteOption)
+class QuoteOptionAdmin(admin.ModelAdmin):
+    list_display = ['order', 'supplier_name', 'quoted_amount', 'is_recommended', 'is_selected', 'submitted_at']
+    list_filter = ['is_recommended', 'is_selected', 'submitted_at']
+    search_fields = ['order__order_number', 'supplier_name', 'notes']
+    readonly_fields = ['submitted_at']
+    ordering = ['-submitted_at']
+    inlines = [QuoteOptionItemInline]
+
+@admin.register(QuoteOptionItem)
+class QuoteOptionItemAdmin(admin.ModelAdmin):
+    list_display = ['quote_option', 'order_item', 'unit_price', 'total_price', 'availability']
+    list_filter = ['availability']
+    search_fields = ['quote_option__supplier_name', 'order_item__item_name']
+    ordering = ['quote_option', 'order_item']

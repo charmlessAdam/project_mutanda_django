@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from .models import Order, OrderApproval, OrderActivity, OrderComment, OrderNotification, QuoteOption
+from .models import Order, OrderItem, OrderApproval, OrderActivity, OrderComment, OrderNotification, QuoteOption, QuoteOptionItem
 from .serializers import (
     OrderListSerializer, OrderDetailSerializer, OrderCreateSerializer,
     OrderApprovalActionSerializer, OrderCommentCreateSerializer,
@@ -595,12 +595,27 @@ class OrderViewSet(viewsets.ModelViewSet):
             recommended_quote = None
 
             for quote_data in quotes_data:
+                # Extract item_quotes data before creating QuoteOption
+                item_quotes_data = quote_data.pop('item_quotes', [])
+
                 quote = QuoteOption.objects.create(
                     order=order,
                     submitted_by=request.user,
                     **quote_data
                 )
                 created_quotes.append(quote)
+
+                # Create item-level quotes if provided
+                if item_quotes_data:
+                    for item_quote in item_quotes_data:
+                        QuoteOptionItem.objects.create(
+                            quote_option=quote,
+                            order_item_id=item_quote['order_item_id'],
+                            unit_price=item_quote['unit_price'],
+                            total_price=item_quote['total_price'],
+                            availability=item_quote.get('availability', ''),
+                            notes=item_quote.get('notes', '')
+                        )
 
                 if quote.is_recommended:
                     recommended_quote = quote
@@ -1096,7 +1111,182 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
         
         return Response({'message': 'Order marked as completed'})
-    
+
+    @action(detail=True, methods=['post'])
+    def split_and_approve(self, request, pk=None):
+        """Split order into multiple orders based on item groups and approve - NEW FEATURE"""
+        try:
+            order = self.get_object()
+
+            # Debug logging
+            print(f"DEBUG: split_and_approve called for order {order.id} by user {request.user.username}")
+            print(f"DEBUG: Request data: {request.data}")
+
+            # Only managers and super_admins can split orders
+            if request.user.role not in ['manager', 'super_admin']:
+                return Response(
+                    {'error': 'Only managers can split orders'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            if order.status != 'pending':
+                return Response(
+                    {'error': 'Can only split orders that are pending manager approval'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            item_groups = request.data.get('item_groups', [])
+            notes = request.data.get('notes', 'Order split by manager')
+
+            print(f"DEBUG: item_groups: {item_groups}")
+        except Exception as e:
+            print(f"ERROR in split_and_approve initial validation: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': f'Initial validation failed: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        if not item_groups or len(item_groups) < 1:
+            return Response(
+                {'error': 'Must provide at least one item group'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get all order items
+        order_items = list(order.items.all())
+        if not order_items:
+            return Response(
+                {'error': 'Order has no items to split'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate that all item IDs are valid and belong to this order
+        all_item_ids = {item.id for item in order_items}
+        provided_item_ids = set()
+        for group in item_groups:
+            provided_item_ids.update(group)
+
+        if provided_item_ids != all_item_ids:
+            return Response(
+                {'error': 'Item groups must include all items exactly once'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            with transaction.atomic():
+                created_orders = []
+
+                # If only one group, just approve the existing order
+                if len(item_groups) == 1:
+                    old_status = order.status
+                    order.status = 'approved_by_manager'
+                    order.save()
+
+                    # Log activity
+                    log_order_activity(
+                        order=order,
+                        user=request.user,
+                        activity_type='manager_approved',
+                        description=f"Order approved by manager {request.user.get_full_name()}",
+                        request=request,
+                        previous_status=old_status,
+                        new_status=order.status
+                    )
+
+                    return Response({
+                        'message': 'Order approved successfully',
+                        'created_orders': [order.id]
+                    })
+
+                # Create a new order for each group
+                for group_index, item_ids in enumerate(item_groups, 1):
+                    # Get items for this group
+                    group_items = [item for item in order_items if item.id in item_ids]
+
+                    # Calculate total cost for this group
+                    group_cost = sum(float(item.estimated_cost or 0) for item in group_items)
+
+                    # Create title based on items
+                    if len(group_items) == 1:
+                        new_title = group_items[0].item_name
+                    else:
+                        new_title = f"Split Order {group_index}/{len(item_groups)} - {len(group_items)} items"
+
+                    # Create new order with unique order number
+                    new_order = Order.objects.create(
+                        order_number=generate_order_number(order.order_type),
+                        order_type=order.order_type,
+                        title=new_title,
+                        description=f"{order.description}\n\n[Split from order {order.order_number} - Group {group_index}]",
+                        quantity=sum(item.quantity for item in group_items),
+                        unit='items',
+                        urgency=order.urgency,
+                        estimated_cost=group_cost or Decimal('0.01'),
+                        supplier=order.supplier,
+                        requested_by=order.requested_by,
+                        status='approved_by_manager'  # Automatically approve the split orders
+                    )
+
+                    # Copy items to new order
+                    for item in group_items:
+                        OrderItem.objects.create(
+                            order=new_order,
+                            item_name=item.item_name,
+                            is_custom_item=item.is_custom_item,
+                            quantity=item.quantity,
+                            unit=item.unit,
+                            estimated_cost=item.estimated_cost
+                        )
+
+                    # Log activity for new order
+                    try:
+                        log_order_activity(
+                            order=new_order,
+                            user=request.user,
+                            activity_type='created',
+                            description=f"Order created by splitting {order.order_number} and approved by manager {request.user.get_full_name()}",
+                            request=request,
+                            previous_status='pending',
+                            new_status='approved_by_manager'
+                        )
+                    except Exception as e:
+                        # Log failed, but continue - order was created successfully
+                        print(f"Warning: Failed to log activity for new order {new_order.id}: {str(e)}")
+
+                    created_orders.append(new_order.id)
+
+                # Mark original order as completed/cancelled
+                old_status = order.status
+                order.status = 'completed'
+                order.completion_date = timezone.now()
+                order.save()
+
+                # Log that original was split
+                log_order_activity(
+                    order=order,
+                    user=request.user,
+                    activity_type='status_changed',
+                    description=f"Order split into {len(item_groups)} separate orders by manager {request.user.get_full_name()}. New order IDs: {created_orders}. {notes}",
+                    request=request,
+                    previous_status=old_status,
+                    new_status='completed'
+                )
+
+            return Response({
+                'message': f'Order successfully split into {len(created_orders)} orders and approved',
+                'created_orders': created_orders
+            })
+        except Exception as e:
+            print(f"ERROR in split_and_approve transaction: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': f'Failed to split order: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
     @action(detail=True, methods=['put'])
     def submit_revision(self, request, pk=None):
         """Submit revised order by original requester"""
