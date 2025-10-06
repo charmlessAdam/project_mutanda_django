@@ -148,13 +148,31 @@ def generate_order_number(order_type):
     """Generate unique order number"""
     prefix = order_type.upper()[:3]
     year = datetime.now().year
-    
-    # Get count of orders this year
-    count = Order.objects.filter(
+
+    # Get highest number for this prefix and year to avoid duplicates
+    existing_orders = Order.objects.filter(
         order_number__startswith=f"{prefix}-{year}-"
-    ).count() + 1
-    
-    return f"{prefix}-{year}-{count:04d}"
+    ).order_by('-order_number').values_list('order_number', flat=True)
+
+    if existing_orders:
+        # Extract number from last order (format: PREFIX-YEAR-NNNN)
+        last_number = int(existing_orders[0].split('-')[-1])
+        count = last_number + 1
+    else:
+        count = 1
+
+    # Try to create unique number, increment if collision occurs
+    max_attempts = 100
+    for attempt in range(max_attempts):
+        order_number = f"{prefix}-{year}-{count:04d}"
+        if not Order.objects.filter(order_number=order_number).exists():
+            return order_number
+        count += 1
+
+    # Fallback: use timestamp if we can't find unique number
+    import time
+    timestamp = int(time.time() * 1000) % 10000
+    return f"{prefix}-{year}-{timestamp:04d}"
 
 class OrderViewSet(viewsets.ModelViewSet):
     """
