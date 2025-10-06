@@ -171,6 +171,7 @@ class QuoteOptionItem(models.Model):
     total_price = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
     availability = models.CharField(max_length=100, blank=True, null=True, help_text="Item availability status")
     notes = models.TextField(blank=True, null=True, help_text="Item-specific notes")
+    is_not_available = models.BooleanField(default=False, help_text="Mark if this item is not available from this supplier")
 
     class Meta:
         ordering = ['order_item__id']

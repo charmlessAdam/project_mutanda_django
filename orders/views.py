@@ -608,13 +608,15 @@ class OrderViewSet(viewsets.ModelViewSet):
                 # Create item-level quotes if provided
                 if item_quotes_data:
                     for item_quote in item_quotes_data:
+                        is_not_available = item_quote.get('is_not_available', False)
                         QuoteOptionItem.objects.create(
                             quote_option=quote,
                             order_item_id=item_quote['order_item_id'],
-                            unit_price=item_quote['unit_price'],
-                            total_price=item_quote['total_price'],
+                            unit_price=item_quote.get('unit_price', Decimal('0.01')) if not is_not_available else Decimal('0.01'),
+                            total_price=item_quote.get('total_price', Decimal('0.01')) if not is_not_available else Decimal('0.01'),
                             availability=item_quote.get('availability', ''),
-                            notes=item_quote.get('notes', '')
+                            notes=item_quote.get('notes', ''),
+                            is_not_available=is_not_available
                         )
 
                 if quote.is_recommended:
@@ -815,6 +817,120 @@ class OrderViewSet(viewsets.ModelViewSet):
                     )
 
         return Response({'message': f'Quote {action_type} successfully'})
+
+    @action(detail=True, methods=['post'])
+    def approve_mixed_quote(self, request, pk=None):
+        """Manager selects individual items from different quotes - MIXED QUOTE APPROVAL"""
+        order = self.get_object()
+
+        if order.status != 'procurement_quote_submitted':
+            return Response(
+                {'error': 'Order must have submitted quotes for approval'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        selected_item_quote_ids = request.data.get('selected_item_quotes', [])
+
+        if not selected_item_quote_ids or len(selected_item_quote_ids) == 0:
+            return Response(
+                {'error': 'selected_item_quotes is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        with transaction.atomic():
+            # Validate all selected item quotes exist and belong to this order
+            selected_items = QuoteOptionItem.objects.filter(
+                id__in=selected_item_quote_ids,
+                quote_option__order=order
+            ).select_related('quote_option', 'order_item')
+
+            if selected_items.count() != len(selected_item_quote_ids):
+                return Response(
+                    {'error': 'One or more selected item quotes not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Group selected items by quote option
+            quote_selections = {}
+            total_amount = Decimal('0.00')
+
+            for item_quote in selected_items:
+                quote_id = item_quote.quote_option.id
+                if quote_id not in quote_selections:
+                    quote_selections[quote_id] = {
+                        'quote': item_quote.quote_option,
+                        'items': []
+                    }
+                quote_selections[quote_id]['items'].append(item_quote)
+                total_amount += item_quote.total_price
+
+            # Mark which quote options are selected (partial or full)
+            order.quote_options.update(is_selected=False)
+            for quote_id in quote_selections.keys():
+                quote_selections[quote_id]['quote'].is_selected = True
+                quote_selections[quote_id]['quote'].save()
+
+            # Update order with aggregated quote details
+            suppliers = [qs['quote'].supplier_name for qs in quote_selections.values()]
+            order.quote_amount = total_amount
+            order.quote_supplier = ', '.join(suppliers) if len(suppliers) > 1 else suppliers[0]
+            order.quote_notes = f"Mixed quote: {len(selected_item_quote_ids)} items from {len(suppliers)} supplier(s)"
+
+            # Create quote approval record
+            approval_notes = f"Approved mixed quote from {len(suppliers)} supplier(s): {', '.join(suppliers)}"
+            OrderApproval.objects.update_or_create(
+                order=order,
+                stage='manager_quote',
+                defaults={
+                    'approver': request.user,
+                    'action': 'approved',
+                    'notes': approval_notes,
+                    'requires_revision': False,
+                    'revision_completed': False
+                }
+            )
+
+            # Update order status
+            old_status = order.status
+            order.status = 'quote_approved_by_manager'
+            order.save()
+
+            # Log activity
+            log_order_activity(
+                order=order,
+                user=request.user,
+                activity_type='quote_approved',
+                description=f"Mixed quote approved by manager {request.user.get_full_name()} - ${total_amount} from {len(suppliers)} suppliers: {', '.join(suppliers)}",
+                request=request,
+                previous_status=old_status,
+                new_status=order.status,
+                selected_quote_ids=list(quote_selections.keys()),
+                selected_suppliers=suppliers,
+                selected_amount=float(total_amount),
+                notes=approval_notes
+            )
+
+            # Notify finance team
+            finance_users = User.objects.filter(role='finance_manager')
+            for fin_user in finance_users:
+                create_notification(
+                    order=order,
+                    recipient=fin_user,
+                    notification_type='approval_needed',
+                    title=f'Payment Needed: {order.order_number}',
+                    message=f'Mixed quote approved for {order.title} - ${total_amount} from {len(suppliers)} suppliers'
+                )
+
+            # Notify requester
+            create_notification(
+                order=order,
+                recipient=order.requested_by,
+                notification_type='approved',
+                title=f'Quote Approved: {order.order_number}',
+                message=f'Mixed quote for {order.title} approved - ${total_amount} from {len(suppliers)} suppliers. Sent to finance for payment.'
+            )
+
+        return Response({'message': 'Mixed quote approved successfully', 'total_amount': str(total_amount)})
 
     @action(detail=True, methods=['post'])
     def complete_payment(self, request, pk=None):

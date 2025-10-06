@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
+from decimal import Decimal
 from .models import Order, OrderApproval, OrderActivity, OrderComment, OrderNotification, QuoteOption, OrderItem, QuoteOptionItem
 
 User = get_user_model()
@@ -56,7 +57,7 @@ class QuoteOptionItemSerializer(serializers.ModelSerializer):
         model = QuoteOptionItem
         fields = [
             'id', 'order_item', 'order_item_name', 'order_item_quantity', 'order_item_unit',
-            'unit_price', 'total_price', 'availability', 'notes'
+            'unit_price', 'total_price', 'availability', 'notes', 'is_not_available'
         ]
 
 class QuoteOptionSerializer(serializers.ModelSerializer):
@@ -207,10 +208,11 @@ class OrderCommentCreateSerializer(serializers.ModelSerializer):
 class QuoteOptionItemCreateSerializer(serializers.Serializer):
     """Serializer for creating quote option items"""
     order_item_id = serializers.IntegerField()
-    unit_price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0.01)
-    total_price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0.01)
+    unit_price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal('0.01'), required=False)
+    total_price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal('0.01'), required=False)
     availability = serializers.CharField(max_length=100, required=False, allow_blank=True)
     notes = serializers.CharField(required=False, allow_blank=True)
+    is_not_available = serializers.BooleanField(required=False, default=False)
 
 class QuoteOptionCreateSerializer(serializers.ModelSerializer):
     item_quotes = QuoteOptionItemCreateSerializer(many=True, required=False)
