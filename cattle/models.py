@@ -22,24 +22,24 @@ class CattleSection(models.Model):
 
 class Animal(models.Model):
     """Individual animals in the cattle management system"""
-    eid = models.CharField(max_length=50, unique=True, help_text="Electronic ID (e.g., 964 001034143697)")
-    vid = models.CharField(max_length=50, blank=True, help_text="Visual ID if different from EID")
+    eid = models.CharField(max_length=50, unique=True, help_text="Electronic ID (e.g., 964 001034143697)", db_index=True)
+    vid = models.CharField(max_length=50, blank=True, help_text="Visual ID if different from EID", db_index=True)
     section = models.ForeignKey(CattleSection, on_delete=models.CASCADE, related_name='animals')
-    
+
     # Basic information
-    breed = models.CharField(max_length=100, blank=True)
+    breed = models.CharField(max_length=100, blank=True, db_index=True)
     gender = models.CharField(max_length=10, choices=[
         ('male', 'Male'),
         ('female', 'Female'),
         ('castrated', 'Castrated')
     ], blank=True)
     birth_date = models.DateField(blank=True, null=True)
-    entry_date = models.DateField(help_text="Date animal entered the system")
+    entry_date = models.DateField(help_text="Date animal entered the system", db_index=True)
     entry_weight = models.DecimalField(max_digits=6, decimal_places=2, blank=True, null=True, help_text="Weight at entry (kg)")
-    
+
     # Current status
     current_weight = models.DecimalField(max_digits=6, decimal_places=2, blank=True, null=True, help_text="Current weight (kg)")
-    is_active = models.BooleanField(default=True, help_text="Is animal currently in the system")
+    is_active = models.BooleanField(default=True, help_text="Is animal currently in the system", db_index=True)
     exit_date = models.DateField(blank=True, null=True, help_text="Date animal left the system")
     exit_reason = models.CharField(max_length=100, blank=True, choices=[
         ('sold', 'Sold'),
@@ -47,25 +47,25 @@ class Animal(models.Model):
         ('transferred', 'Transferred'),
         ('other', 'Other')
     ])
-    
+
     # Health and notes
     health_status = models.CharField(max_length=50, choices=[
         ('healthy', 'Healthy'),
         ('sick', 'Sick'),
         ('under_treatment', 'Under Treatment'),
         ('quarantine', 'Quarantine')
-    ], default='healthy')
+    ], default='healthy', db_index=True)
     notes = models.TextField(blank=True)
-    
+
     # Tracking
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='created_animals')
     last_updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='updated_animals')
-    
+
     def __str__(self):
         return f"{self.eid} - Section {self.section.section_number}"
-    
+
     @property
     def age_days(self):
         """Calculate age in days"""
@@ -73,16 +73,21 @@ class Animal(models.Model):
             from datetime import date
             return (date.today() - self.birth_date).days
         return None
-    
+
     @property
     def days_in_system(self):
         """Calculate days in the system"""
         from datetime import date
         end_date = self.exit_date if self.exit_date else date.today()
         return (end_date - self.entry_date).days
-    
+
     class Meta:
         ordering = ['section__section_number', 'eid']
+        indexes = [
+            models.Index(fields=['section', 'is_active']),  # For section filtering
+            models.Index(fields=['is_active', 'health_status']),  # For combined queries
+            models.Index(fields=['entry_date', 'is_active']),  # For date-based queries
+        ]
 
 
 class WeightRecord(models.Model):
