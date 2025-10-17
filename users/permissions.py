@@ -108,11 +108,11 @@ class SectionPermission(permissions.BasePermission):
 
 class MedicineManagementPermission(permissions.BasePermission):
     """Permission class for Medicine Management section"""
-    
+
     def has_permission(self, request, view):
         if not request.user.is_authenticated:
             return False
-        
+
         # Map HTTP methods to permission levels
         method_permission_map = {
             'GET': 'read_only',
@@ -123,9 +123,51 @@ class MedicineManagementPermission(permissions.BasePermission):
             'PATCH': 'edit_records',
             'DELETE': 'full_access',
         }
-        
+
         required_level = method_permission_map.get(request.method, 'read_only')
         return request.user.has_section_permission('medicine_management', required_level)
+
+
+class MedicineStoragePermission(permissions.BasePermission):
+    """Permission class for Medicine Storage section"""
+
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+
+        method_permission_map = {
+            'GET': 'read_only',
+            'HEAD': 'read_only',
+            'OPTIONS': 'read_only',
+            'POST': 'add_records',
+            'PUT': 'edit_records',
+            'PATCH': 'edit_records',
+            'DELETE': 'full_access',
+        }
+
+        required_level = method_permission_map.get(request.method, 'read_only')
+        return request.user.has_section_permission('medicine_storage', required_level)
+
+
+class StorageInventoryPermission(permissions.BasePermission):
+    """Permission class for Storage Inventory section"""
+
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+
+        method_permission_map = {
+            'GET': 'read_only',
+            'HEAD': 'read_only',
+            'OPTIONS': 'read_only',
+            'POST': 'add_records',
+            'PUT': 'edit_records',
+            'PATCH': 'edit_records',
+            'DELETE': 'full_access',
+        }
+
+        required_level = method_permission_map.get(request.method, 'read_only')
+        return request.user.has_section_permission('storage_inventory', required_level)
 
 
 class CattleManagementPermission(permissions.BasePermission):

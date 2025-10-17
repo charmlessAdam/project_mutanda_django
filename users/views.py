@@ -122,13 +122,13 @@ class UserManagementViewSet(ModelViewSet):
     ordering = ['role', 'username']
     
     def get_queryset(self):
-        """Return only users that the current user can manage"""
+        """Return only users that the current user can manage (excluding soft-deleted users)"""
         user = self.request.user
         if user.role == 'super_admin':
-            # Super admin can see all users
-            return User.objects.all().select_related('manager', 'created_by')
+            # Super admin can see all users (excluding soft-deleted)
+            return User.objects.filter(is_deleted=False).select_related('manager', 'created_by')
         else:
-            # Other users can only see users they can manage
+            # Other users can only see users they can manage (excluding soft-deleted)
             manageable_users = user.get_manageable_users()
             return manageable_users.select_related('manager', 'created_by')
     
@@ -190,24 +190,28 @@ class UserManagementViewSet(ModelViewSet):
         )
     
     def perform_destroy(self, instance):
-        """Don't actually delete, just deactivate"""
+        """Soft delete - mark user as deleted instead of removing from database"""
         if not self.request.user.can_deactivate_users:
-            raise permissions.PermissionDenied("You don't have permission to deactivate users.")
-        
+            raise permissions.PermissionDenied("You don't have permission to delete users.")
+
         if not self.request.user.can_manage_user(instance):
             raise permissions.PermissionDenied("You cannot manage this user.")
-        
+
+        # Soft delete: mark as deleted and deactivate
+        from django.utils import timezone
+        instance.is_deleted = True
         instance.is_active = False
+        instance.deleted_at = timezone.now()
         instance.save()
-        
+
         # Log activity
         UserActivity.objects.create(
             performed_by=self.request.user,
             target_user=instance,
-            action='deactivated',
-            description=f"Deactivated user {instance.username}",
-            old_values={'is_active': True},
-            new_values={'is_active': False},
+            action='deleted',
+            description=f"Deleted user {instance.username}",
+            old_values={'is_deleted': False, 'is_active': instance.is_active},
+            new_values={'is_deleted': True, 'is_active': False},
             ip_address=self.request.META.get('REMOTE_ADDR')
         )
     
@@ -215,16 +219,16 @@ class UserManagementViewSet(ModelViewSet):
     def activate(self, request, pk=None):
         """Activate a deactivated user"""
         user = self.get_object()
-        
+
         if not request.user.can_manage_user(user):
             return Response({
                 'success': False,
                 'error': 'You cannot manage this user.'
             }, status=status.HTTP_403_FORBIDDEN)
-        
+
         user.is_active = True
         user.save()
-        
+
         # Log activity
         UserActivity.objects.create(
             performed_by=request.user,
@@ -235,10 +239,79 @@ class UserManagementViewSet(ModelViewSet):
             new_values={'is_active': True},
             ip_address=request.META.get('REMOTE_ADDR')
         )
-        
+
         return Response({
             'success': True,
             'message': f'User {user.username} has been activated.'
+        })
+
+    @action(detail=True, methods=['post'])
+    def deactivate(self, request, pk=None):
+        """Deactivate a user (temporary disable without soft delete)"""
+        user = self.get_object()
+
+        if not request.user.can_manage_user(user):
+            return Response({
+                'success': False,
+                'error': 'You cannot manage this user.'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        user.is_active = False
+        user.save()
+
+        # Log activity
+        UserActivity.objects.create(
+            performed_by=request.user,
+            target_user=user,
+            action='deactivated',
+            description=f"Deactivated user {user.username}",
+            old_values={'is_active': True},
+            new_values={'is_active': False},
+            ip_address=request.META.get('REMOTE_ADDR')
+        )
+
+        return Response({
+            'success': True,
+            'message': f'User {user.username} has been deactivated.'
+        })
+
+    @action(detail=True, methods=['post'])
+    def restore(self, request, pk=None):
+        """Restore a soft-deleted user"""
+        # Need to get the user even if deleted
+        try:
+            user = User.objects.get(pk=pk, is_deleted=True)
+        except User.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'User not found or not deleted.'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        if not request.user.can_manage_user(user):
+            return Response({
+                'success': False,
+                'error': 'You cannot manage this user.'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        user.is_deleted = False
+        user.deleted_at = None
+        user.is_active = True  # Also reactivate
+        user.save()
+
+        # Log activity
+        UserActivity.objects.create(
+            performed_by=request.user,
+            target_user=user,
+            action='restored',
+            description=f"Restored deleted user {user.username}",
+            old_values={'is_deleted': True, 'is_active': False},
+            new_values={'is_deleted': False, 'is_active': True},
+            ip_address=request.META.get('REMOTE_ADDR')
+        )
+
+        return Response({
+            'success': True,
+            'message': f'User {user.username} has been restored.'
         })
     
     @action(detail=True, methods=['post'])
@@ -276,16 +349,33 @@ class UserManagementViewSet(ModelViewSet):
         })
     
     @action(detail=False, methods=['get'])
+    def deleted_users(self, request):
+        """Get list of soft-deleted users (super admin only)"""
+        if request.user.role != 'super_admin':
+            return Response({
+                'success': False,
+                'error': 'Only super admins can view deleted users.'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        deleted_users = User.objects.filter(is_deleted=True).select_related('manager', 'created_by')
+        serializer = UserManagementSerializer(deleted_users, many=True, context={'request': request})
+
+        return Response({
+            'success': True,
+            'deleted_users': serializer.data
+        })
+
+    @action(detail=False, methods=['get'])
     def hierarchy(self, request):
         """Get user hierarchy tree"""
         user = request.user
-        
+
         # Get the hierarchy starting from the current user
         hierarchy_data = {
             'user': UserManagementSerializer(user, context={'request': request}).data,
             'subordinates': user.get_hierarchy_tree()
         }
-        
+
         return Response(hierarchy_data)
     
     @action(detail=False, methods=['get'])
@@ -509,8 +599,8 @@ class SectionPermissionViewSet(ModelViewSet):
                 'error': 'Only super admins can view the permission matrix.'
             }, status=status.HTTP_403_FORBIDDEN)
         
-        # Get all users and sections
-        users = User.objects.all().order_by('username')
+        # Get all users (excluding soft-deleted) and sections
+        users = User.objects.filter(is_deleted=False).order_by('username')
         sections = Section.objects.filter(is_active=True).order_by('display_name')
         
         # Build permission matrix

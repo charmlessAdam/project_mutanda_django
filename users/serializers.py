@@ -23,19 +23,20 @@ class UserSerializer(serializers.ModelSerializer):
     creatable_roles = serializers.ListField(read_only=True)
     manageable_users_count = serializers.SerializerMethodField()
     subordinates_count = serializers.SerializerMethodField()
-    
+    section_permissions = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = (
-            'id', 'username', 'email', 'first_name', 'last_name', 
-            'full_name', 'role', 'role_display', 'role_level', 'phone', 'location', 
+            'id', 'username', 'email', 'first_name', 'last_name',
+            'full_name', 'role', 'role_display', 'role_level', 'phone', 'location',
             'bio', 'department', 'manager', 'created_by', 'is_active', 'is_superuser',
             'can_create_users', 'can_edit_users', 'can_deactivate_users',
             'date_joined', 'last_login', 'last_password_change',
-            'creatable_roles', 'manageable_users_count', 'subordinates_count'
+            'creatable_roles', 'manageable_users_count', 'subordinates_count', 'section_permissions'
         )
         read_only_fields = (
-            'id', 'date_joined', 'last_login', 'last_password_change', 
+            'id', 'date_joined', 'last_login', 'last_password_change',
             'role_level', 'can_create_users', 'can_edit_users', 'can_deactivate_users'
         )
     
@@ -44,7 +45,19 @@ class UserSerializer(serializers.ModelSerializer):
     
     def get_subordinates_count(self, obj):
         return obj.get_subordinates().count()
-    
+
+    def get_section_permissions(self, obj):
+        """Return section permissions as a dictionary with section names as keys"""
+        permissions = {}
+        for perm in obj.section_permissions.select_related('section').all():
+            permissions[perm.section.name] = {
+                'level': perm.permission_level,
+                'display': perm.get_permission_level_display(),
+                'section_id': perm.section.id,
+                'section_display': perm.section.display_name
+            }
+        return permissions
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data['creatable_roles'] = instance.get_creatable_roles()

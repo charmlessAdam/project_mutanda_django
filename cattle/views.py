@@ -726,6 +726,73 @@ def animal_health_records(request, animal_id):
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def weight_trend(request):
+    """
+    Get aggregated weight trend data for the last 7 days
+    Returns daily totals and averages for all active animals
+    """
+    try:
+        from datetime import timedelta
+
+        # Get date range (last 7 days)
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=6)
+
+        # Get all weight records in the date range
+        weight_records = WeightRecord.objects.filter(
+            measurement_date__gte=start_date,
+            measurement_date__lte=end_date,
+            animal__is_active=True
+        ).values('measurement_date').annotate(
+            total_weight=models.Sum('weight'),
+            average_weight=models.Avg('weight'),
+            animal_count=models.Count('animal', distinct=True)
+        ).order_by('measurement_date')
+
+        # Convert to list and fill in missing dates
+        trend_data = []
+        current_date = start_date
+        records_dict = {r['measurement_date']: r for r in weight_records}
+
+        # Get current state for fallback
+        current_animals = Animal.objects.filter(is_active=True, current_weight__isnull=False)
+        current_total = current_animals.aggregate(total=models.Sum('current_weight'))['total'] or 0
+        current_avg = current_animals.aggregate(avg=models.Avg('current_weight'))['avg'] or 0
+        current_count = current_animals.count()
+
+        while current_date <= end_date:
+            if current_date in records_dict:
+                record = records_dict[current_date]
+                trend_data.append({
+                    'date': current_date.strftime('%Y-%m-%d'),
+                    'totalWeight': float(record['total_weight'] or 0),
+                    'averageWeight': float(record['average_weight'] or 0),
+                    'animalCount': record['animal_count']
+                })
+            else:
+                # Use current values for dates without records
+                trend_data.append({
+                    'date': current_date.strftime('%Y-%m-%d'),
+                    'totalWeight': float(current_total),
+                    'averageWeight': float(current_avg),
+                    'animalCount': current_count
+                })
+            current_date += timedelta(days=1)
+
+        return Response({
+            'success': True,
+            'trend': trend_data
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response({
+            'error': f'Failed to fetch weight trend: {str(e)}',
+            'success': False
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def add_health_record(request):

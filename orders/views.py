@@ -742,6 +742,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 order.quote_amount = selected_quote.quoted_amount
                 order.quote_supplier = selected_quote.supplier_name
                 order.quote_notes = selected_quote.notes or ''
+                order.estimated_cost = selected_quote.quoted_amount  # Update estimated_cost to the actual quote price
 
                 # Create quote approval record
                 approval, created = OrderApproval.objects.update_or_create(
@@ -893,6 +894,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             order.quote_amount = total_amount
             order.quote_supplier = ', '.join(suppliers) if len(suppliers) > 1 else suppliers[0]
             order.quote_notes = f"Mixed quote: {len(selected_item_quote_ids)} items from {len(suppliers)} supplier(s)"
+            order.estimated_cost = total_amount  # Update estimated_cost to match total mixed quote amount
 
             # Create quote approval record
             approval_notes = f"Approved mixed quote from {len(suppliers)} supplier(s): {', '.join(suppliers)}"

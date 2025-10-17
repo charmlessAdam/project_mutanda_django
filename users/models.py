@@ -71,13 +71,15 @@ class User(AbstractUser):
     
     # Status and permissions
     is_active = models.BooleanField(default=True)
+    is_deleted = models.BooleanField(default=False, help_text="Soft delete - user is hidden but not removed from database")
     can_create_users = models.BooleanField(default=False)
     can_edit_users = models.BooleanField(default=False)
     can_deactivate_users = models.BooleanField(default=False)
-    
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     last_password_change = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when user was soft deleted")
     
     class Meta:
         ordering = ['role', 'username']
@@ -138,9 +140,9 @@ class User(AbstractUser):
         return manager_user.can_manage_role(self.role)
     
     def get_manageable_users(self):
-        """Get all users this user can manage"""
+        """Get all users this user can manage (excluding soft-deleted users)"""
         manageable_roles = self.MANAGEMENT_PERMISSIONS.get(self.role, [])
-        return User.objects.filter(role__in=manageable_roles)
+        return User.objects.filter(role__in=manageable_roles, is_deleted=False)
     
     def get_creatable_roles(self):
         """Get list of roles this user can create"""
@@ -204,6 +206,8 @@ class UserActivity(models.Model):
         ('updated', 'User Updated'),
         ('deactivated', 'User Deactivated'),
         ('activated', 'User Activated'),
+        ('deleted', 'User Deleted'),
+        ('restored', 'User Restored'),
         ('role_changed', 'Role Changed'),
         ('password_reset', 'Password Reset'),
     ]
@@ -253,9 +257,15 @@ class Section(models.Model):
     """System sections/modules that can have permissions assigned"""
     SECTION_CHOICES = [
         ('medicine_management', 'Medicine Management'),
-        ('cattle_management', 'Cattle Management'), 
+        ('medicine_storage', 'Medicine Storage'),
+        ('cattle_management', 'Cattle Management'),
         ('user_management', 'User Management'),
         ('warehouse_storage', 'Warehouse Storage'),
+        ('storage_inventory', 'Storage Inventory'),
+        ('finance_management', 'Finance Management'),
+        ('procurement', 'Procurement'),
+        ('feed_management', 'Feed Management'),
+        ('operations', 'Operations'),
         ('reports', 'Reports'),
         ('settings', 'Settings'),
     ]
