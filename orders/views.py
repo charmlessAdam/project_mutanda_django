@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from .models import Order, OrderItem, OrderApproval, OrderActivity, OrderComment, OrderNotification, QuoteOption, QuoteOptionItem
+from .models import Order, OrderItem, OrderApproval, OrderActivity, OrderComment, OrderNotification, QuoteOption, QuoteOptionItem, generate_po_number
 from .serializers import (
     OrderListSerializer, OrderDetailSerializer, OrderCreateSerializer,
     OrderApprovalActionSerializer, OrderCommentCreateSerializer,
@@ -616,9 +616,17 @@ class OrderViewSet(viewsets.ModelViewSet):
                 # Extract item_quotes data before creating QuoteOption
                 item_quotes_data = quote_data.pop('item_quotes', [])
 
+                # Calculate VAT amount and total
+                quoted_amount = quote_data.get('quoted_amount', Decimal('0.00'))
+                vat_percentage = quote_data.get('vat_percentage', Decimal('0.00'))
+                vat_amount = (quoted_amount * vat_percentage) / Decimal('100.00')
+                total_with_vat = quoted_amount + vat_amount
+
                 quote = QuoteOption.objects.create(
                     order=order,
                     submitted_by=request.user,
+                    vat_amount=vat_amount,
+                    total_with_vat=total_with_vat,
                     **quote_data
                 )
                 created_quotes.append(quote)
@@ -736,6 +744,11 @@ class OrderViewSet(viewsets.ModelViewSet):
                 # Mark selected quote
                 order.quote_options.update(is_selected=False)  # Clear all selections
                 selected_quote.is_selected = True
+
+                # Generate PO number if not already exists
+                if not selected_quote.po_number:
+                    selected_quote.po_number = generate_po_number(selected_quote.buying_company)
+
                 selected_quote.save()
 
                 # Update order with selected quote details
@@ -883,11 +896,17 @@ class OrderViewSet(viewsets.ModelViewSet):
                 quote_selections[quote_id]['items'].append(item_quote)
                 total_amount += item_quote.total_price
 
-            # Mark which quote options are selected (partial or full)
+            # Mark which quote options are selected (partial or full) and generate PO numbers
             order.quote_options.update(is_selected=False)
             for quote_id in quote_selections.keys():
-                quote_selections[quote_id]['quote'].is_selected = True
-                quote_selections[quote_id]['quote'].save()
+                quote = quote_selections[quote_id]['quote']
+                quote.is_selected = True
+
+                # Generate PO number if not already exists
+                if not quote.po_number:
+                    quote.po_number = generate_po_number(quote.buying_company)
+
+                quote.save()
 
             # Update order with aggregated quote details
             suppliers = [qs['quote'].supplier_name for qs in quote_selections.values()]

@@ -68,11 +68,12 @@ class QuoteOptionSerializer(serializers.ModelSerializer):
         model = QuoteOption
         fields = [
             'id', 'supplier_name', 'supplier_address', 'buying_company',
-            'quoted_amount', 'delivery_time', 'notes',
+            'quoted_amount', 'vat_percentage', 'vat_amount', 'total_with_vat',
+            'po_number', 'delivery_time', 'notes',
             'is_recommended', 'is_selected',
             'submitted_by', 'submitted_at', 'item_quotes'
         ]
-        read_only_fields = ['is_selected', 'submitted_by', 'submitted_at']
+        read_only_fields = ['is_selected', 'submitted_by', 'submitted_at', 'vat_amount', 'total_with_vat', 'po_number']
 
 class OrderListSerializer(serializers.ModelSerializer):
     requested_by = UserBasicSerializer(read_only=True)
@@ -219,11 +220,16 @@ class QuoteOptionCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = QuoteOption
-        fields = ['supplier_name', 'supplier_address', 'buying_company', 'quoted_amount', 'delivery_time', 'notes', 'is_recommended', 'item_quotes']
+        fields = ['supplier_name', 'supplier_address', 'buying_company', 'quoted_amount', 'vat_percentage', 'delivery_time', 'notes', 'is_recommended', 'item_quotes']
 
     def validate_quoted_amount(self, value):
         if value <= 0:
             raise serializers.ValidationError("Quoted amount must be greater than 0")
+        return value
+
+    def validate_vat_percentage(self, value):
+        if value < 0 or value > 100:
+            raise serializers.ValidationError("VAT percentage must be between 0 and 100")
         return value
 
 class SubmitQuotesSerializer(serializers.Serializer):

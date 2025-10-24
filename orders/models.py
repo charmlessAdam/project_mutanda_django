@@ -2,8 +2,70 @@ from django.db import models
 from django.contrib.auth import get_user_model
 from django.core.validators import MinValueValidator
 from decimal import Decimal
+from datetime import datetime
 
 User = get_user_model()
+
+def generate_po_number(buying_company):
+    """
+    Generate a unique PO number based on:
+    - PO prefix
+    - Two letters representing the buyer
+    - Year of creation
+    - Progressive 4-digit number
+
+    Example: POMF20240001 for Mutanda Farms in 2024
+    """
+    # Extract buyer code from company name
+    if not buying_company:
+        buyer_code = "XX"
+    else:
+        # Handle special cases
+        company_upper = buying_company.upper().strip()
+
+        if company_upper == "MUTANDA FARMS":
+            buyer_code = "MF"
+        elif company_upper == "MUTANDA MILLING":
+            buyer_code = "MM"
+        elif company_upper == "KING EGGS":
+            buyer_code = "KE"
+        elif company_upper == "NTEGU SAFARIS":
+            buyer_code = "NS"
+        elif " " in company_upper:
+            # Multi-word: take first letter of each word
+            words = company_upper.split()
+            buyer_code = (words[0][0] + words[1][0]) if len(words) >= 2 else words[0][:2]
+        else:
+            # Single word: take first two letters
+            buyer_code = company_upper[:2]
+
+    # Get current year
+    current_year = datetime.now().year
+
+    # Build prefix: PO + buyer_code + year
+    prefix = f"PO{buyer_code}{current_year}"
+
+    # Find the highest existing number for this prefix
+    from django.db.models import Max
+    existing_pos = QuoteOption.objects.filter(
+        po_number__startswith=prefix
+    ).aggregate(Max('po_number'))
+
+    if existing_pos['po_number__max']:
+        # Extract the last 4 digits and increment
+        last_po = existing_pos['po_number__max']
+        try:
+            last_number = int(last_po[-4:])
+            next_number = last_number + 1
+        except (ValueError, IndexError):
+            next_number = 1
+    else:
+        next_number = 1
+
+    # Format as 4-digit number with leading zeros
+    po_number = f"{prefix}{next_number:04d}"
+
+    return po_number
 
 class Order(models.Model):
     ORDER_TYPES = [
@@ -140,6 +202,10 @@ class QuoteOption(models.Model):
     supplier_address = models.TextField(blank=True, null=True, help_text="Supplier address")
     buying_company = models.CharField(max_length=100, blank=True, null=True, help_text="Which company is buying")
     quoted_amount = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+    vat_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0.00'), help_text="VAT percentage (e.g., 18.00 for 18%)")
+    vat_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Calculated VAT amount")
+    total_with_vat = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Total amount including VAT")
+    po_number = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="Purchase Order number (e.g., POMF202400001)")
     delivery_time = models.CharField(max_length=100, blank=True, null=True, help_text="Estimated delivery time")
     notes = models.TextField(blank=True, null=True)
     is_recommended = models.BooleanField(default=False, help_text="Procurement's recommended option")
