@@ -5,7 +5,9 @@ from .views import (
     StorageLocationViewSet,
     InventoryItemViewSet,
     StockTransactionViewSet,
-    InventoryAlertViewSet
+    InventoryAlertViewSet,
+    FeedPrescriptionViewSet,
+    FeedConsumptionViewSet
 )
 
 router = DefaultRouter()
@@ -14,6 +16,8 @@ router.register(r'locations', StorageLocationViewSet, basename='storage-location
 router.register(r'items', InventoryItemViewSet, basename='inventory-item')
 router.register(r'transactions', StockTransactionViewSet, basename='stock-transaction')
 router.register(r'alerts', InventoryAlertViewSet, basename='inventory-alert')
+router.register(r'feed-prescriptions', FeedPrescriptionViewSet, basename='feed-prescription')
+router.register(r'feed-consumptions', FeedConsumptionViewSet, basename='feed-consumption')
 
 urlpatterns = [
     path('', include(router.urls)),

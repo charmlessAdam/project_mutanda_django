@@ -12,14 +12,17 @@ from .models import (
     StorageLocation,
     InventoryItem,
     StockTransaction,
-    InventoryAlert
+    InventoryAlert,
+    FeedPrescription,
+    FeedConsumption
 )
 from .serializers import (
     InventoryCategorySerializer,
     StorageLocationSerializer,
     InventoryItemSerializer,
     StockTransactionSerializer,
-    InventoryAlertSerializer
+    InventoryAlertSerializer,
+    FeedConsumptionSerializer
 )
 
 
@@ -81,7 +84,14 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
     serializer_class = InventoryItemSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['category', 'storage_location', 'is_active', 'is_consumable', 'condition']
+    filterset_fields = {
+        'category': ['exact'],
+        'category__name': ['exact', 'icontains'],
+        'storage_location': ['exact'],
+        'is_active': ['exact'],
+        'is_consumable': ['exact'],
+        'condition': ['exact'],
+    }
     search_fields = ['name', 'brand', 'description', 'sku', 'barcode', 'supplier']
     ordering_fields = ['name', 'quantity', 'created_at', 'updated_at', 'expiration_date']
     ordering = ['category__name', 'name']
@@ -396,3 +406,46 @@ class InventoryAlertViewSet(viewsets.ModelViewSet):
         alerts = self.get_queryset().filter(is_read=False)
         serializer = self.get_serializer(alerts, many=True)
         return Response(serializer.data)
+
+
+class FeedPrescriptionViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint for feed prescriptions
+    """
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['status', 'is_active', 'target_animal_type']
+    search_fields = ['name', 'description', 'target_animal_type']
+    ordering_fields = ['name', 'created_at', 'cost_per_ton']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        from .models import FeedPrescription
+        return FeedPrescription.objects.select_related('created_by').prefetch_related(
+            'ingredients__inventory_item__category'
+        ).all()
+
+    def get_serializer_class(self):
+        from .serializers import FeedPrescriptionSerializer, FeedPrescriptionCreateUpdateSerializer
+        if self.action in ['create', 'update', 'partial_update']:
+            return FeedPrescriptionCreateUpdateSerializer
+        return FeedPrescriptionSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class FeedConsumptionViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint for feed consumption records
+    """
+    queryset = FeedConsumption.objects.select_related('prescription', 'recorded_by').all()
+    serializer_class = FeedConsumptionSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['prescription', 'target_section', 'consumption_date']
+    ordering_fields = ['consumption_date', 'created_at']
+    ordering = ['-consumption_date']
+
+    def perform_create(self, serializer):
+        serializer.save(recorded_by=self.request.user)

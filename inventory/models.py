@@ -284,3 +284,136 @@ class InventoryAlert(models.Model):
             models.Index(fields=['is_resolved', '-created_at']),
             models.Index(fields=['severity', '-created_at']),
         ]
+
+
+class FeedPrescription(models.Model):
+    """Feed mixing formulas/prescriptions"""
+    STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('draft', 'Draft'),
+        ('inactive', 'Inactive'),
+    ]
+
+    name = models.CharField(max_length=200, help_text="Prescription name")
+    description = models.TextField(blank=True)
+    target_animal_type = models.CharField(max_length=100, help_text="e.g., Dairy Cattle, Growing Cattle")
+    target_weight = models.CharField(max_length=50, blank=True, help_text="Weight range e.g., 500-700kg")
+
+    # Nutritional profile
+    total_protein = models.DecimalField(max_digits=5, decimal_places=2, default=0, help_text="Total protein %")
+    total_energy = models.DecimalField(max_digits=5, decimal_places=2, default=0, help_text="Total energy MCal/kg")
+    total_fiber = models.DecimalField(max_digits=5, decimal_places=2, default=0, help_text="Total fiber %")
+
+    # Cost
+    cost_per_ton = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Cost per ton")
+
+    # Status
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
+    is_active = models.BooleanField(default=True)
+
+    # Tracking
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='created_feed_prescriptions')
+
+    def __str__(self):
+        return f"{self.name} - {self.target_animal_type}"
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status', 'is_active']),
+            models.Index(fields=['target_animal_type']),
+        ]
+
+
+class PrescriptionIngredient(models.Model):
+    """Ingredients in a feed prescription"""
+    prescription = models.ForeignKey(FeedPrescription, on_delete=models.CASCADE, related_name='ingredients')
+    inventory_item = models.ForeignKey(InventoryItem, on_delete=models.CASCADE, help_text="Feed ingredient")
+
+    # Composition
+    percentage = models.DecimalField(max_digits=5, decimal_places=2, help_text="Percentage in mix")
+    kg_per_ton = models.DecimalField(max_digits=7, decimal_places=2, help_text="Kilograms per ton")
+
+    # Order for display
+    order = models.IntegerField(default=0)
+
+    def __str__(self):
+        return f"{self.prescription.name} - {self.inventory_item.name} ({self.percentage}%)"
+
+    class Meta:
+        ordering = ['order', 'id']
+        unique_together = ['prescription', 'inventory_item']
+
+
+class FeedConsumption(models.Model):
+    """Track feed consumption records"""
+    prescription = models.ForeignKey(
+        FeedPrescription,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='consumption_records',
+        help_text="Feed prescription used (optional)"
+    )
+
+    # Consumption details
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, help_text="Quantity consumed in kg or tons")
+    unit = models.CharField(max_length=20, default='kg', choices=[('kg', 'Kilograms'), ('ton', 'Tons')])
+
+    # Target information
+    target_section = models.CharField(max_length=200, blank=True, help_text="Farm section or animal group")
+    animal_count = models.IntegerField(null=True, blank=True, help_text="Number of animals fed")
+
+    # Date and tracking
+    consumption_date = models.DateField(help_text="Date of consumption")
+    notes = models.TextField(blank=True)
+
+    # Calculated field - ingredient usage
+    ingredient_usage = models.JSONField(blank=True, null=True, help_text="Auto-calculated ingredient breakdown")
+
+    # User tracking
+    recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='feed_consumptions')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def calculate_ingredient_usage(self):
+        """Calculate ingredient usage based on prescription"""
+        if not self.prescription:
+            return None
+
+        # Convert quantity to kg
+        quantity_kg = float(self.quantity)
+        if self.unit == 'ton':
+            quantity_kg = quantity_kg * 1000
+
+        # Calculate each ingredient
+        usage = {}
+        for ing in self.prescription.ingredients.all():
+            kg_used = (float(ing.kg_per_ton) / 1000) * quantity_kg
+            usage[ing.inventory_item.name] = {
+                'quantity': round(kg_used, 2),
+                'unit': 'kg',
+                'percentage': float(ing.percentage),
+                'item_id': ing.inventory_item.id
+            }
+
+        return usage
+
+    def save(self, *args, **kwargs):
+        # Auto-calculate ingredient usage if prescription is provided
+        if self.prescription:
+            self.ingredient_usage = self.calculate_ingredient_usage()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        prescription_name = self.prescription.name if self.prescription else 'Custom Feed'
+        return f"{prescription_name} - {self.quantity} {self.unit} on {self.consumption_date}"
+
+    class Meta:
+        ordering = ['-consumption_date', '-created_at']
+        indexes = [
+            models.Index(fields=['-consumption_date']),
+            models.Index(fields=['prescription', '-consumption_date']),
+        ]

@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from .models import InventoryCategory, StorageLocation, InventoryItem, StockTransaction, InventoryAlert
+from .models import (
+    InventoryCategory, StorageLocation, InventoryItem, StockTransaction,
+    InventoryAlert, FeedPrescription, PrescriptionIngredient, FeedConsumption
+)
 
 
 class InventoryCategorySerializer(serializers.ModelSerializer):
@@ -103,3 +106,102 @@ class InventoryAlertSerializer(serializers.ModelSerializer):
             'resolved_by', 'resolved_by_username', 'resolution_notes'
         ]
         read_only_fields = ['created_at']
+
+
+class PrescriptionIngredientSerializer(serializers.ModelSerializer):
+    ingredient_id = serializers.IntegerField(source='inventory_item.id', read_only=True)
+    ingredient_name = serializers.CharField(source='inventory_item.name', read_only=True)
+    ingredient_category = serializers.CharField(source='inventory_item.category.name', read_only=True)
+    inventory_item_id = serializers.IntegerField(write_only=True, source='inventory_item.id')
+
+    class Meta:
+        model = PrescriptionIngredient
+        fields = [
+            'id', 'inventory_item_id', 'ingredient_id', 'ingredient_name', 'ingredient_category',
+            'percentage', 'kg_per_ton', 'order'
+        ]
+
+
+class FeedPrescriptionSerializer(serializers.ModelSerializer):
+    ingredients = PrescriptionIngredientSerializer(many=True, read_only=True)
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.full_name', read_only=True)
+
+    class Meta:
+        model = FeedPrescription
+        fields = [
+            'id', 'name', 'description', 'target_animal_type', 'target_weight',
+            'total_protein', 'total_energy', 'total_fiber', 'cost_per_ton',
+            'status', 'is_active', 'created_at', 'updated_at',
+            'created_by', 'created_by_username', 'created_by_name', 'ingredients'
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+
+
+class FeedPrescriptionCreateUpdateSerializer(serializers.ModelSerializer):
+    ingredients_data = serializers.ListField(write_only=True, required=False)
+
+    class Meta:
+        model = FeedPrescription
+        fields = [
+            'id', 'name', 'description', 'target_animal_type', 'target_weight',
+            'total_protein', 'total_energy', 'total_fiber', 'cost_per_ton',
+            'status', 'is_active', 'ingredients_data'
+        ]
+
+    def create(self, validated_data):
+        ingredients_data = validated_data.pop('ingredients_data', [])
+        prescription = FeedPrescription.objects.create(**validated_data)
+
+        # Create ingredients
+        for idx, ingredient_data in enumerate(ingredients_data):
+            PrescriptionIngredient.objects.create(
+                prescription=prescription,
+                inventory_item_id=ingredient_data.get('inventory_item_id'),
+                percentage=ingredient_data.get('percentage'),
+                kg_per_ton=ingredient_data.get('kg_per_ton'),
+                order=idx
+            )
+
+        return prescription
+
+    def update(self, instance, validated_data):
+        ingredients_data = validated_data.pop('ingredients_data', None)
+
+        # Update prescription fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Update ingredients if provided
+        if ingredients_data is not None:
+            # Delete old ingredients
+            instance.ingredients.all().delete()
+
+            # Create new ingredients
+            for idx, ingredient_data in enumerate(ingredients_data):
+                PrescriptionIngredient.objects.create(
+                    prescription=instance,
+                    inventory_item_id=ingredient_data.get('inventory_item_id'),
+                    percentage=ingredient_data.get('percentage'),
+                    kg_per_ton=ingredient_data.get('kg_per_ton'),
+                    order=idx
+                )
+
+        return instance
+
+
+class FeedConsumptionSerializer(serializers.ModelSerializer):
+    prescription_name = serializers.CharField(source='prescription.name', read_only=True)
+    recorded_by_username = serializers.CharField(source='recorded_by.username', read_only=True)
+    ingredient_usage = serializers.JSONField(read_only=True)
+
+    class Meta:
+        model = FeedConsumption
+        fields = [
+            'id', 'prescription', 'prescription_name', 'quantity', 'unit',
+            'target_section', 'animal_count', 'consumption_date',
+            'ingredient_usage', 'notes', 'recorded_by', 'recorded_by_username',
+            'created_at'
+        ]
+        read_only_fields = ['created_at', 'ingredient_usage', 'recorded_by', 'recorded_by_username']
