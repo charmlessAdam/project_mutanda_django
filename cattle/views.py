@@ -793,6 +793,297 @@ def weight_trend(request):
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def update_animal(request, animal_id):
+    """
+    Update animal information
+    Supports updating: eid, vid, breed, gender, birth_date, entry_date, entry_weight, notes
+    """
+    try:
+        # Get the animal
+        try:
+            animal = Animal.objects.get(id=animal_id, is_active=True)
+        except Animal.DoesNotExist:
+            return Response({
+                'error': 'Animal not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # Update fields if provided in request
+        if 'eid' in request.data:
+            eid = request.data['eid'].strip()
+            if not eid:
+                return Response({'error': 'EID cannot be empty'},
+                              status=status.HTTP_400_BAD_REQUEST)
+
+            # Check if EID is already used by another animal
+            if Animal.objects.filter(eid=eid).exclude(id=animal_id).exists():
+                return Response({'error': f'EID {eid} is already used by another animal'},
+                              status=status.HTTP_400_BAD_REQUEST)
+            animal.eid = eid
+
+        if 'vid' in request.data:
+            animal.vid = request.data['vid'].strip()
+
+        if 'breed' in request.data:
+            animal.breed = request.data['breed'].strip()
+
+        if 'gender' in request.data:
+            gender = request.data['gender']
+            if gender in ['male', 'female', 'castrated']:
+                animal.gender = gender
+            else:
+                return Response({'error': 'Invalid gender value. Use: male, female, or castrated'},
+                              status=status.HTTP_400_BAD_REQUEST)
+
+        if 'birth_date' in request.data:
+            birth_date_str = request.data['birth_date']
+            if birth_date_str:
+                try:
+                    # Try different date formats
+                    for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']:
+                        try:
+                            animal.birth_date = datetime.strptime(str(birth_date_str), fmt).date()
+                            break
+                        except ValueError:
+                            continue
+                    else:
+                        return Response({'error': 'Invalid birth date format. Use YYYY-MM-DD'},
+                                      status=status.HTTP_400_BAD_REQUEST)
+                except Exception:
+                    return Response({'error': 'Invalid birth date format'},
+                                  status=status.HTTP_400_BAD_REQUEST)
+            else:
+                animal.birth_date = None
+
+        if 'entry_date' in request.data:
+            entry_date_str = request.data['entry_date']
+            if entry_date_str:
+                try:
+                    for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']:
+                        try:
+                            animal.entry_date = datetime.strptime(str(entry_date_str), fmt).date()
+                            break
+                        except ValueError:
+                            continue
+                    else:
+                        return Response({'error': 'Invalid entry date format. Use YYYY-MM-DD'},
+                                      status=status.HTTP_400_BAD_REQUEST)
+                except Exception:
+                    return Response({'error': 'Invalid entry date format'},
+                                  status=status.HTTP_400_BAD_REQUEST)
+
+        if 'entry_weight' in request.data:
+            try:
+                entry_weight = float(request.data['entry_weight'])
+                if entry_weight <= 0:
+                    return Response({'error': 'Entry weight must be greater than 0'},
+                                  status=status.HTTP_400_BAD_REQUEST)
+                animal.entry_weight = entry_weight
+            except (ValueError, TypeError):
+                return Response({'error': 'Invalid entry weight value'},
+                              status=status.HTTP_400_BAD_REQUEST)
+
+        if 'notes' in request.data:
+            animal.notes = request.data['notes']
+
+        # Update last_updated_by
+        animal.last_updated_by = request.user
+        animal.save()
+
+        # Return updated animal data
+        serializer = AnimalSerializer(animal)
+        return Response({
+            'success': True,
+            'message': 'Animal updated successfully',
+            'animal': serializer.data
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response({
+            'error': f'Failed to update animal: {str(e)}',
+            'success': False
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_animal(request):
+    """
+    Create a new animal
+    Required fields: eid, section_id, gender
+    Optional fields: vid, breed, entry_weight, birth_date, entry_date
+    """
+    try:
+        # Validate required fields
+        eid = request.data.get('eid', '').strip()
+        if not eid:
+            return Response({
+                'error': 'Electronic ID (EID) is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        section_id = request.data.get('section_id')
+        if not section_id:
+            return Response({
+                'error': 'Section is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        gender = request.data.get('gender', 'male')
+        if gender not in ['male', 'female', 'castrated']:
+            return Response({
+                'error': 'Invalid gender value. Use: male, female, or castrated'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check if EID already exists
+        if Animal.objects.filter(eid=eid).exists():
+            return Response({
+                'error': f'Animal with EID {eid} already exists'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validate section exists
+        try:
+            section = CattleSection.objects.get(id=section_id)
+        except CattleSection.DoesNotExist:
+            return Response({
+                'error': 'Selected section does not exist'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # Check section capacity
+        current_count = Animal.objects.filter(section=section, is_active=True).count()
+        if current_count >= section.capacity:
+            return Response({
+                'error': f'Section {section.name} is at full capacity ({section.capacity} animals)'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Parse entry_weight if provided
+        entry_weight = None
+        if 'entry_weight' in request.data and request.data['entry_weight']:
+            try:
+                entry_weight = float(request.data['entry_weight'])
+                if entry_weight <= 0:
+                    return Response({
+                        'error': 'Entry weight must be greater than 0'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            except (ValueError, TypeError):
+                return Response({
+                    'error': 'Invalid entry weight value'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Parse entry_date if provided, otherwise use today
+        entry_date = datetime.now().date()
+        if 'entry_date' in request.data and request.data['entry_date']:
+            entry_date_str = request.data['entry_date']
+            try:
+                for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']:
+                    try:
+                        entry_date = datetime.strptime(str(entry_date_str), fmt).date()
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    return Response({
+                        'error': 'Invalid entry date format. Use YYYY-MM-DD'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            except Exception:
+                return Response({
+                    'error': 'Invalid entry date format'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Parse birth_date if provided
+        birth_date = None
+        if 'birth_date' in request.data and request.data['birth_date']:
+            birth_date_str = request.data['birth_date']
+            try:
+                for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']:
+                    try:
+                        birth_date = datetime.strptime(str(birth_date_str), fmt).date()
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    return Response({
+                        'error': 'Invalid birth date format. Use YYYY-MM-DD'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            except Exception:
+                return Response({
+                    'error': 'Invalid birth date format'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create the animal
+        animal = Animal.objects.create(
+            eid=eid,
+            vid=request.data.get('vid', '').strip(),
+            section=section,
+            breed=request.data.get('breed', '').strip(),
+            gender=gender,
+            entry_date=entry_date,
+            entry_weight=entry_weight,
+            birth_date=birth_date,
+            current_weight=entry_weight,  # Set current weight to entry weight initially
+            is_active=True,
+            health_status='healthy',
+            created_by=request.user,
+            last_updated_by=request.user
+        )
+
+        # Return created animal data
+        serializer = AnimalSerializer(animal)
+        return Response({
+            'success': True,
+            'message': 'Animal created successfully',
+            'animal': serializer.data
+        }, status=status.HTTP_201_CREATED)
+
+    except Exception as e:
+        return Response({
+            'error': f'Failed to create animal: {str(e)}',
+            'success': False
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_animal(request, animal_id):
+    """
+    Delete an animal and all its related records
+    This is a permanent action that cannot be undone
+    """
+    try:
+        # Get the animal
+        try:
+            animal = Animal.objects.get(id=animal_id)
+        except Animal.DoesNotExist:
+            return Response({
+                'error': 'Animal not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # Store EID for response message
+        animal_eid = animal.eid
+        animal_vid = animal.vid
+
+        # Django will automatically cascade delete related records:
+        # - WeightRecord (related_name='weight_records')
+        # - HealthRecord (related_name='health_records')
+        # - AnimalMovement (related_name='movements')
+        # This is due to on_delete=models.CASCADE in the foreign keys
+
+        # Permanently delete the animal
+        animal.delete()
+
+        return Response({
+            'success': True,
+            'message': f'Animal {animal_eid} has been permanently deleted',
+            'deleted_eid': animal_eid,
+            'deleted_vid': animal_vid
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response({
+            'error': f'Failed to delete animal: {str(e)}',
+            'success': False
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def add_health_record(request):
