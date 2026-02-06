@@ -110,24 +110,26 @@ WSGI_APPLICATION = 'project_mutanda_django.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': 'project-mutabda-db',
-#         'USER': 'Cinema8208',
-#         'PASSWORD': 'nZQ#VP*oU&qx5o',
-#         'HOST': 'project-mutabda-db.cx5vznvbyjsm.eu-central-1.rds.amazonaws.com',
-#         'PORT': '5432',
-#     }
-# }
-
-# For development - using SQLite
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+if DEBUG:
+    # Development: Use SQLite
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
     }
-}
+else:
+    # Production: Use AWS RDS (PostgreSQL)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': 'mutanda-project',
+            'USER': 'Cinema8208',
+            'PASSWORD': 'nZQ#VP*oU&qx5o',
+            'HOST': 'mutanda-project.cx5vznvbyjsm.eu-central-1.rds.amazonaws.com',
+            'PORT': '5432',
+        }
+    }
 
 
 # Password validation
