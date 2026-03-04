@@ -354,9 +354,20 @@ class OrderComment(models.Model):
 
 class OrderNotification(models.Model):
     """
-    System notifications for order workflow events
+    System-wide notifications for workflow events.
+    Supports order, message, inventory, and access notifications.
     """
+    CATEGORY_CHOICES = [
+        ('order', 'Order'),
+        ('message', 'Message'),
+        ('inventory', 'Inventory'),
+        ('access', 'Access'),
+    ]
+
     NOTIFICATION_TYPES = [
+        ('new_message', 'New Message'),
+        ('inventory_alert', 'Inventory Alert'),
+        ('access_changed', 'Access Changed'),
         ('approval_needed', 'Approval Needed'),
         ('approved', 'Order Approved'),
         ('rejected', 'Order Rejected'),
@@ -365,19 +376,36 @@ class OrderNotification(models.Model):
         ('overdue', 'Order Overdue'),
     ]
     
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='notifications')
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.SET_NULL,
+        related_name='notifications',
+        null=True,
+        blank=True,
+    )
     recipient = models.ForeignKey(User, on_delete=models.CASCADE, related_name='order_notifications')
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name='triggered_notifications',
+        null=True,
+        blank=True,
+    )
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='order')
     notification_type = models.CharField(max_length=20, choices=NOTIFICATION_TYPES)
     title = models.CharField(max_length=200)
     message = models.TextField()
+    source_url = models.CharField(max_length=255, blank=True, default='')
+    metadata = models.JSONField(default=dict, blank=True)
     is_read = models.BooleanField(default=False)
-    
+
     created_at = models.DateTimeField(auto_now_add=True)
     read_at = models.DateTimeField(blank=True, null=True)
-    
+
     class Meta:
         ordering = ['-created_at']
         indexes = [
+            models.Index(fields=['recipient', 'category', 'is_read', '-created_at']),
             models.Index(fields=['recipient', 'is_read', '-created_at']),
         ]
     

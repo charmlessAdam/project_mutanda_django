@@ -1,0 +1,43 @@
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   .env.example
+	modified:   cattle/__pycache__/views.cpython-312.pyc
+	modified:   db.sqlite3
+	modified:   inventory/__pycache__/views.cpython-312.pyc
+	modified:   inventory/tests.py
+	modified:   inventory/views.py
+	modified:   medicine/__pycache__/views.cpython-312.pyc
+	modified:   medicine/views.py
+	modified:   orders/__pycache__/models.cpython-312.pyc
+	modified:   orders/__pycache__/serializers.cpython-312.pyc
+	modified:   orders/__pycache__/views.cpython-312.pyc
+	modified:   orders/models.py
+	modified:   orders/serializers.py
+	modified:   orders/views.py
+	modified:   project_mutanda_django/__pycache__/settings.cpython-312.pyc
+	modified:   project_mutanda_django/__pycache__/urls.cpython-312.pyc
+	modified:   project_mutanda_django/settings.py
+	modified:   project_mutanda_django/urls.py
+	modified:   users/__pycache__/urls.cpython-312.pyc
+	modified:   users/__pycache__/views.cpython-312.pyc
+	modified:   users/tests.py
+	modified:   users/urls.py
+	modified:   users/views.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.github/workflows/backend-tests.yml
+	NOTIFICATION_MATRIX.md
+	medicine/tests.py
+	messaging/
+	orders/migrations/0010_ordernotification_actor_ordernotification_category_and_more.py
+	runserver.err.log
+	runserver.log
+	status.txt
+	users/authentication.py
+
+no changes added to commit (use "git add" and/or "git commit -a")

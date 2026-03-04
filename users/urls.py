@@ -6,6 +6,8 @@ from .views import (
     CurrentUserApi, 
     ChangePasswordApi,
     logout_api,
+    csrf_token_api,
+    RefreshCookieApi,
     UserManagementViewSet,
     UserActivityViewSet,
     SectionViewSet,
@@ -24,6 +26,8 @@ urlpatterns = [
     path('auth/login/', LoginApi.as_view(), name='login'),
     path('auth/register/', RegisterApi.as_view(), name='register'),
     path('auth/logout/', logout_api, name='logout'),
+    path('auth/csrf/', csrf_token_api, name='csrf_token'),
+    path('auth/refresh/', RefreshCookieApi.as_view(), name='refresh_cookie'),
     
     # Current user endpoints
     path('users/me/', CurrentUserApi.as_view(), name='current_user'),
@@ -35,3 +39,4 @@ urlpatterns = [
     # Include router URLs
     path('', include(router.urls)),
 ]
+

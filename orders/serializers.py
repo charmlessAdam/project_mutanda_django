@@ -251,13 +251,29 @@ class SubmitQuotesSerializer(serializers.Serializer):
 
 class OrderNotificationSerializer(serializers.ModelSerializer):
     order = OrderListSerializer(read_only=True)
+    actor_name = serializers.SerializerMethodField()
     
     class Meta:
         model = OrderNotification
         fields = [
-            'id', 'order', 'notification_type', 'title', 'message', 
-            'is_read', 'created_at', 'read_at'
+            'id',
+            'order',
+            'category',
+            'notification_type',
+            'title',
+            'message',
+            'source_url',
+            'metadata',
+            'actor_name',
+            'is_read',
+            'created_at',
+            'read_at',
         ]
+
+    def get_actor_name(self, obj):
+        if not obj.actor:
+            return ''
+        return obj.actor.full_name
 
 # Superadmin-specific serializers with more detailed information
 class SuperAdminOrderActivitySerializer(OrderActivitySerializer):

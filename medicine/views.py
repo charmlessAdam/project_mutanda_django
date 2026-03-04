@@ -1,4 +1,4 @@
-from rest_framework import generics, status, permissions
+﻿from rest_framework import generics, status, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
@@ -47,13 +47,13 @@ class HasStoragePermission(permissions.BasePermission):
 class MedicineClassListCreateView(generics.ListCreateAPIView):
     queryset = MedicineClass.objects.all()
     serializer_class = MedicineClassSerializer
-    permission_classes = []  # Temporarily remove permission check for testing
+    permission_classes = [permissions.IsAuthenticated, HasStoragePermission]
 
 
 class MedicineListCreateView(generics.ListCreateAPIView):
     queryset = Medicine.objects.select_related('medicine_class', 'created_by').all()
     serializer_class = MedicineSerializer
-    permission_classes = []  # Temporarily remove permission check for testing
+    permission_classes = [permissions.IsAuthenticated, HasStoragePermission]
     
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
@@ -62,12 +62,12 @@ class MedicineListCreateView(generics.ListCreateAPIView):
 class MedicineDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Medicine.objects.select_related('medicine_class', 'created_by').all()
     serializer_class = MedicineSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasStoragePermission]
 
 
 class StoragePermissionListCreateView(generics.ListCreateAPIView):
     serializer_class = StoragePermissionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasStoragePermission]
     
     def get_queryset(self):
         # Only super_admins can view all storage permissions
@@ -85,7 +85,7 @@ class StoragePermissionListCreateView(generics.ListCreateAPIView):
 
 class StoragePermissionDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = StoragePermissionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasStoragePermission]
     
     def get_queryset(self):
         if self.request.user.role == 'super_admin':

@@ -5,7 +5,9 @@ from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
 from django.utils import timezone
 from django.db.models import Q, Sum, F
+from django.contrib.auth import get_user_model
 from decimal import Decimal
+from orders.models import OrderNotification
 
 from .models import (
     InventoryCategory,
@@ -24,6 +26,41 @@ from .serializers import (
     InventoryAlertSerializer,
     FeedConsumptionSerializer
 )
+
+User = get_user_model()
+
+
+def create_inventory_notifications(*, actor, item, alert_type, severity, message, recommended_action=''):
+    """Create inventory notifications for relevant operational roles."""
+    recipient_ids = set(
+        User.objects.filter(
+            role__in=['warehouse_worker', 'manager', 'admin', 'super_admin'],
+            is_active=True,
+            is_deleted=False,
+        ).values_list('id', flat=True)
+    )
+    if actor:
+        recipient_ids.add(actor.id)
+
+    for recipient_id in recipient_ids:
+        OrderNotification.objects.create(
+            recipient_id=recipient_id,
+            actor=actor,
+            category='inventory',
+            notification_type='inventory_alert',
+            title=f'Inventory alert: {item.name}',
+            message=message,
+            source_url='/storage-inventory',
+            metadata={
+                'item_id': item.id,
+                'item_name': item.name,
+                'alert_type': alert_type,
+                'severity': severity,
+                'current_quantity': str(item.quantity),
+                'reorder_level': str(item.reorder_level),
+                'recommended_action': recommended_action,
+            },
+        )
 
 
 class InventoryCategoryViewSet(viewsets.ModelViewSet):
@@ -115,7 +152,60 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=self.request.user, last_updated_by=self.request.user)
 
     def perform_update(self, serializer):
-        serializer.save(last_updated_by=self.request.user)
+        previous_quantity = serializer.instance.quantity
+        item = serializer.save(last_updated_by=self.request.user)
+        self._handle_stock_threshold_transition(item=item, previous_quantity=previous_quantity, actor=self.request.user)
+
+    def _handle_stock_threshold_transition(self, *, item, previous_quantity, actor):
+        crossed_to_low = previous_quantity > item.reorder_level and item.quantity <= item.reorder_level
+        recovered_from_low = previous_quantity <= item.reorder_level and item.quantity > item.reorder_level
+
+        if crossed_to_low:
+            alert_type = 'out_of_stock' if item.quantity <= 0 else 'low_stock'
+            severity = 'critical' if item.quantity <= 0 else 'warning'
+            alert_message = (
+                f'{item.name} is {"out of stock" if item.quantity <= 0 else "low in stock"} '
+                f'({item.quantity} {item.unit} remaining)'
+            )
+            recommended_action = f'Reorder {item.name}. Reorder level: {item.reorder_level} {item.unit}'
+
+            InventoryAlert.objects.create(
+                alert_type=alert_type,
+                severity=severity,
+                item=item,
+                location=item.storage_location,
+                message=alert_message,
+                recommended_action=recommended_action
+            )
+            create_inventory_notifications(
+                actor=actor,
+                item=item,
+                alert_type=alert_type,
+                severity=severity,
+                message=alert_message,
+                recommended_action=recommended_action,
+            )
+
+        if recovered_from_low:
+            InventoryAlert.objects.filter(
+                item=item,
+                alert_type__in=['low_stock', 'out_of_stock'],
+                is_resolved=False
+            ).update(
+                is_resolved=True,
+                resolved_at=timezone.now(),
+                resolved_by=actor,
+                resolution_notes='Stock replenished'
+            )
+            OrderNotification.objects.filter(
+                category='inventory',
+                notification_type='inventory_alert',
+                is_read=False,
+                metadata__item_id=item.id,
+            ).update(
+                is_read=True,
+                read_at=timezone.now(),
+            )
 
     @action(detail=True, methods=['post'])
     def stock_in(self, request, pk=None):
@@ -151,18 +241,7 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
             performed_by=request.user
         )
 
-        # Check if low stock alert should be resolved
-        if previous_quantity <= item.reorder_level and item.quantity > item.reorder_level:
-            InventoryAlert.objects.filter(
-                item=item,
-                alert_type='low_stock',
-                is_resolved=False
-            ).update(
-                is_resolved=True,
-                resolved_at=timezone.now(),
-                resolved_by=request.user,
-                resolution_notes='Stock replenished'
-            )
+        self._handle_stock_threshold_transition(item=item, previous_quantity=previous_quantity, actor=request.user)
 
         serializer = self.get_serializer(item)
         return Response(serializer.data)
@@ -202,19 +281,7 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
             performed_by=request.user
         )
 
-        # Create low stock alert if needed
-        if item.quantity <= item.reorder_level:
-            alert_type = 'out_of_stock' if item.quantity <= 0 else 'low_stock'
-            severity = 'critical' if item.quantity <= 0 else 'warning'
-
-            InventoryAlert.objects.create(
-                alert_type=alert_type,
-                severity=severity,
-                item=item,
-                location=item.storage_location,
-                message=f'{item.name} is {"out of stock" if item.quantity <= 0 else "low in stock"} ({item.quantity} {item.unit} remaining)',
-                recommended_action=f'Reorder {item.name}. Reorder level: {item.reorder_level} {item.unit}'
-            )
+        self._handle_stock_threshold_transition(item=item, previous_quantity=previous_quantity, actor=request.user)
 
         serializer = self.get_serializer(item)
         return Response(serializer.data)

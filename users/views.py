@@ -1,11 +1,15 @@
 from rest_framework import generics, permissions, status, filters
 from rest_framework.response import Response
-from rest_framework.decorators import api_view, permission_classes, action
+from rest_framework.decorators import api_view, permission_classes, action, authentication_classes
 from rest_framework.viewsets import ModelViewSet
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from django.contrib.auth import get_user_model
+from django.conf import settings
+from django.middleware.csrf import get_token
 from django.db.models import Q
 from .models import UserActivity, Department, Section, SectionPermission
+from orders.models import OrderNotification
 from .serializers import (
     UserSerializer, 
     RegisterSerializer, 
@@ -22,48 +26,123 @@ from .serializers import (
 
 User = get_user_model()
 
+
+def create_access_notifications(*, actor, target_user, title, message, source_url='/user-list', metadata=None):
+    """Create access-category notifications for actor, target user, and admin oversight."""
+    recipient_ids = set(
+        User.objects.filter(role__in=['super_admin', 'admin'], is_deleted=False).values_list('id', flat=True)
+    )
+    if target_user:
+        recipient_ids.add(target_user.id)
+    if actor:
+        recipient_ids.add(actor.id)
+
+    base_metadata = metadata or {}
+    for recipient_id in recipient_ids:
+        OrderNotification.objects.create(
+            recipient_id=recipient_id,
+            actor=actor,
+            category='access',
+            notification_type='access_changed',
+            title=title,
+            message=message,
+            source_url=source_url,
+            metadata=base_metadata,
+        )
+
+
+def _set_auth_cookies(response, access_token, refresh_token=None):
+    response.set_cookie(
+        settings.JWT_ACCESS_COOKIE_NAME,
+        access_token,
+        httponly=True,
+        secure=settings.JWT_COOKIE_SECURE,
+        samesite=settings.JWT_COOKIE_SAMESITE,
+        domain=settings.JWT_COOKIE_DOMAIN,
+        path=settings.JWT_COOKIE_PATH,
+    )
+
+    if refresh_token:
+        response.set_cookie(
+            settings.JWT_REFRESH_COOKIE_NAME,
+            refresh_token,
+            httponly=True,
+            secure=settings.JWT_COOKIE_SECURE,
+            samesite=settings.JWT_COOKIE_SAMESITE,
+            domain=settings.JWT_COOKIE_DOMAIN,
+            path=settings.JWT_COOKIE_REFRESH_PATH,
+        )
+
+
+def _clear_auth_cookies(response):
+    response.delete_cookie(
+        settings.JWT_ACCESS_COOKIE_NAME,
+        domain=settings.JWT_COOKIE_DOMAIN,
+        path=settings.JWT_COOKIE_PATH,
+        samesite=settings.JWT_COOKIE_SAMESITE,
+    )
+    response.delete_cookie(
+        settings.JWT_REFRESH_COOKIE_NAME,
+        domain=settings.JWT_COOKIE_DOMAIN,
+        path=settings.JWT_COOKIE_REFRESH_PATH,
+        samesite=settings.JWT_COOKIE_SAMESITE,
+    )
+
 # Login API
 class LoginApi(generics.GenericAPIView):
     serializer_class = LoginSerializer
+    authentication_classes = []
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
-        
+
         refresh = RefreshToken.for_user(user)
-        
-        return Response({
+        access = str(refresh.access_token)
+        refresh_str = str(refresh)
+
+        response = Response({
             'success': True,
             'user': UserSerializer(user).data,
+            # Keep tokens temporarily for backward compatibility while frontend migration completes.
             'tokens': {
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
+                'refresh': refresh_str,
+                'access': access,
             }
         })
+        _set_auth_cookies(response, access, refresh_str)
+        get_token(request)
+        return response
 
 # Register API
 class RegisterApi(generics.GenericAPIView):
     serializer_class = RegisterSerializer
+    authentication_classes = []
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        
+
         refresh = RefreshToken.for_user(user)
-        
-        return Response({
+        access = str(refresh.access_token)
+        refresh_str = str(refresh)
+
+        response = Response({
             "success": True,
             "user": UserSerializer(user).data,
             "tokens": {
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
+                'refresh': refresh_str,
+                'access': access,
             },
             "message": "User created successfully.",
         }, status=status.HTTP_201_CREATED)
+        _set_auth_cookies(response, access, refresh_str)
+        get_token(request)
+        return response
 
 # Current User API
 class CurrentUserApi(generics.RetrieveUpdateAPIView):
@@ -93,23 +172,54 @@ class ChangePasswordApi(generics.GenericAPIView):
             'message': 'Password changed successfully.'
         })
 
-# Logout API (Optional - for blacklisting tokens)
+# CSRF bootstrap endpoint
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def csrf_token_api(request):
+    token = get_token(request)
+    return Response({'success': True, 'csrfToken': token})
+
+
+class RefreshCookieApi(generics.GenericAPIView):
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        refresh_token = request.COOKIES.get(settings.JWT_REFRESH_COOKIE_NAME) or request.data.get('refresh')
+        if not refresh_token:
+            return Response({'success': False, 'error': 'Refresh token missing.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        serializer = TokenRefreshSerializer(data={'refresh': refresh_token})
+        serializer.is_valid(raise_exception=True)
+
+        access = serializer.validated_data['access']
+        rotated_refresh = serializer.validated_data.get('refresh')
+
+        response = Response({'success': True})
+        _set_auth_cookies(response, access, rotated_refresh)
+        return response
+
+
+# Logout API
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def logout_api(request):
-    try:
-        refresh_token = request.data.get("refresh_token")
-        token = RefreshToken(refresh_token)
-        token.blacklist()
-        return Response({
-            'success': True,
-            'message': 'Successfully logged out.'
-        })
-    except Exception as e:
-        return Response({
-            'success': False,
-            'message': 'Error logging out.'
-        }, status=status.HTTP_400_BAD_REQUEST)
+    refresh_token = request.COOKIES.get(settings.JWT_REFRESH_COOKIE_NAME) or request.data.get('refresh_token')
+
+    if refresh_token:
+        try:
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+        except Exception:
+            pass
+
+    response = Response({
+        'success': True,
+        'message': 'Successfully logged out.'
+    })
+    _clear_auth_cookies(response)
+    return response
 
 
 class UserManagementViewSet(ModelViewSet):
@@ -156,10 +266,26 @@ class UserManagementViewSet(ModelViewSet):
             },
             ip_address=self.request.META.get('REMOTE_ADDR')
         )
+
+        create_access_notifications(
+            actor=self.request.user,
+            target_user=permission.user,
+            title=f'Permission granted: {permission.section.display_name}',
+            message=f'Access level set to {permission.get_permission_level_display()}.',
+            source_url='/roles',
+            metadata={
+                'target_user_id': permission.user.id,
+                'change_type': 'section_permission_created',
+                'section': permission.section.name,
+                'permission_level': permission.permission_level,
+            },
+        )
     
     def perform_update(self, serializer):
         """Update user with activity logging"""
         old_instance = self.get_object()
+        old_role = old_instance.role
+        old_active = old_instance.is_active
         old_values = {
             'first_name': old_instance.first_name,
             'last_name': old_instance.last_name,
@@ -188,6 +314,46 @@ class UserManagementViewSet(ModelViewSet):
             new_values=new_values,
             ip_address=self.request.META.get('REMOTE_ADDR')
         )
+
+        create_access_notifications(
+            actor=self.request.user,
+            target_user=permission.user,
+            title=f'Permission updated: {permission.section.display_name}',
+            message=f'Access changed from {old_level} to {permission.permission_level}.',
+            source_url='/roles',
+            metadata={
+                'target_user_id': permission.user.id,
+                'change_type': 'section_permission_updated',
+                'section': permission.section.name,
+                'old_permission_level': old_level,
+                'new_permission_level': permission.permission_level,
+            },
+        )
+
+        role_changed = old_role != user.role
+        active_changed = old_active != user.is_active
+        if role_changed or active_changed:
+            changes = []
+            if role_changed:
+                changes.append(f"role changed from {old_role} to {user.role}")
+            if active_changed:
+                changes.append(f"status changed to {'active' if user.is_active else 'inactive'}")
+
+            create_access_notifications(
+                actor=self.request.user,
+                target_user=user,
+                title=f'Access update for {user.username}',
+                message='; '.join(changes),
+                source_url='/user-list',
+                metadata={
+                    'target_user_id': user.id,
+                    'change_type': 'user_update',
+                    'old_role': old_role,
+                    'new_role': user.role,
+                    'old_is_active': old_active,
+                    'new_is_active': user.is_active,
+                },
+            )
     
     def perform_destroy(self, instance):
         """Soft delete - mark user as deleted instead of removing from database"""
@@ -240,6 +406,18 @@ class UserManagementViewSet(ModelViewSet):
             ip_address=request.META.get('REMOTE_ADDR')
         )
 
+        create_access_notifications(
+            actor=request.user,
+            target_user=user,
+            title=f'User activated: {user.username}',
+            message=f'{request.user.full_name} activated this account.',
+            source_url='/user-list',
+            metadata={
+                'target_user_id': user.id,
+                'change_type': 'activated',
+            },
+        )
+
         return Response({
             'success': True,
             'message': f'User {user.username} has been activated.'
@@ -268,6 +446,18 @@ class UserManagementViewSet(ModelViewSet):
             old_values={'is_active': True},
             new_values={'is_active': False},
             ip_address=request.META.get('REMOTE_ADDR')
+        )
+
+        create_access_notifications(
+            actor=request.user,
+            target_user=user,
+            title=f'User deactivated: {user.username}',
+            message=f'{request.user.full_name} deactivated this account.',
+            source_url='/user-list',
+            metadata={
+                'target_user_id': user.id,
+                'change_type': 'deactivated',
+            },
         )
 
         return Response({
@@ -309,6 +499,18 @@ class UserManagementViewSet(ModelViewSet):
             ip_address=request.META.get('REMOTE_ADDR')
         )
 
+        create_access_notifications(
+            actor=request.user,
+            target_user=user,
+            title=f'User restored: {user.username}',
+            message=f'{request.user.full_name} restored this account.',
+            source_url='/user-list',
+            metadata={
+                'target_user_id': user.id,
+                'change_type': 'restored',
+            },
+        )
+
         return Response({
             'success': True,
             'message': f'User {user.username} has been restored.'
@@ -316,23 +518,25 @@ class UserManagementViewSet(ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def reset_password(self, request, pk=None):
-        """Reset user password"""
+        """Reset user password with admin-provided value (never returned in response)."""
         user = self.get_object()
-        
+
         if not request.user.can_manage_user(user):
             return Response({
                 'success': False,
                 'error': 'You cannot manage this user.'
             }, status=status.HTTP_403_FORBIDDEN)
-        
-        # Generate temporary password
-        import secrets
-        import string
-        temp_password = ''.join(secrets.choice(string.ascii_letters + string.digits) for i in range(12))
-        
-        user.set_password(temp_password)
+
+        new_password = request.data.get('new_password')
+        if not new_password:
+            return Response({
+                'success': False,
+                'error': 'new_password is required.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(new_password)
         user.save()
-        
+
         # Log activity
         UserActivity.objects.create(
             performed_by=request.user,
@@ -341,11 +545,10 @@ class UserManagementViewSet(ModelViewSet):
             description=f"Reset password for user {user.username}",
             ip_address=request.META.get('REMOTE_ADDR')
         )
-        
+
         return Response({
             'success': True,
-            'message': f'Password reset for {user.username}.',
-            'temporary_password': temp_password
+            'message': f'Password reset for {user.username}.'
         })
     
     @action(detail=False, methods=['get'])
@@ -510,7 +713,21 @@ class SectionPermissionViewSet(ModelViewSet):
             },
             ip_address=self.request.META.get('REMOTE_ADDR')
         )
-        
+
+        create_access_notifications(
+            actor=self.request.user,
+            target_user=instance.user,
+            title=f'Permission removed: {instance.section.display_name}',
+            message='Access has been removed for this section.',
+            source_url='/roles',
+            metadata={
+                'target_user_id': instance.user.id,
+                'change_type': 'section_permission_deleted',
+                'section': instance.section.name,
+                'old_permission_level': instance.permission_level,
+            },
+        )
+
         super().perform_destroy(instance)
     
     @action(detail=False, methods=['post'])
@@ -540,54 +757,109 @@ class SectionPermissionViewSet(ModelViewSet):
             }, status=status.HTTP_404_NOT_FOUND)
         
         updated_permissions = []
-        
+        unchanged_count = 0
+
+        section_ids = []
         for perm_data in permissions_data:
             section_id = perm_data.get('section_id')
+            try:
+                section_id = int(section_id)
+            except (TypeError, ValueError):
+                section_id = None
+            if section_id:
+                section_ids.append(section_id)
+
+        sections_by_id = {
+            section.id: section
+            for section in Section.objects.filter(id__in=section_ids, is_active=True)
+        }
+        existing_permissions = {
+            permission.section_id: permission
+            for permission in SectionPermission.objects.filter(
+                user=target_user,
+                section_id__in=sections_by_id.keys()
+            )
+        }
+
+        for perm_data in permissions_data:
+            section_id = perm_data.get('section_id')
+            try:
+                section_id = int(section_id)
+            except (TypeError, ValueError):
+                section_id = None
             permission_level = perm_data.get('permission_level')
             
             if not section_id or not permission_level:
                 continue
                 
-            try:
-                section = Section.objects.get(id=section_id)
-                
-                # Update or create permission
-                permission, created = SectionPermission.objects.update_or_create(
-                    user=target_user,
-                    section=section,
-                    defaults={
-                        'permission_level': permission_level,
-                        'granted_by': request.user
-                    }
-                )
-                
-                updated_permissions.append({
-                    'section': section.display_name,
-                    'permission_level': permission.get_permission_level_display(),
-                    'created': created
-                })
-                
-                # Log activity
-                action_desc = f"{'Granted' if created else 'Updated'} {permission.get_permission_level_display()} access to {section.display_name}"
-                UserActivity.objects.create(
-                    performed_by=request.user,
-                    target_user=target_user,
-                    action='updated',
-                    description=action_desc,
-                    new_values={
-                        'section': section.name,
-                        'permission_level': permission_level
-                    },
-                    ip_address=request.META.get('REMOTE_ADDR')
-                )
-                
-            except Section.DoesNotExist:
+            section = sections_by_id.get(section_id)
+            if not section:
                 continue
-        
+
+            current_permission = existing_permissions.get(section_id)
+            current_level = current_permission.permission_level if current_permission else None
+
+            # Skip unchanged entries so a full-form submit does not spam updates/notifications.
+            if current_level == permission_level:
+                unchanged_count += 1
+                continue
+
+            # Update or create permission only when changed.
+            permission, created = SectionPermission.objects.update_or_create(
+                user=target_user,
+                section=section,
+                defaults={
+                    'permission_level': permission_level,
+                    'granted_by': request.user
+                }
+            )
+
+            updated_permissions.append({
+                'section': section.display_name,
+                'permission_level': permission.get_permission_level_display(),
+                'created': created
+            })
+
+            old_values = {'section': section.name}
+            if current_level is not None:
+                old_values['permission_level'] = current_level
+
+            # Log activity only for real changes.
+            action_desc = f"{'Granted' if created else 'Updated'} {permission.get_permission_level_display()} access to {section.display_name}"
+            UserActivity.objects.create(
+                performed_by=request.user,
+                target_user=target_user,
+                action='updated',
+                description=action_desc,
+                old_values=old_values if current_level is not None else None,
+                new_values={
+                    'section': section.name,
+                    'permission_level': permission_level
+                },
+                ip_address=request.META.get('REMOTE_ADDR')
+            )
+
+            create_access_notifications(
+                actor=request.user,
+                target_user=target_user,
+                title=f'Permission {"granted" if created else "updated"}: {section.display_name}',
+                message=f'Access is now {permission.get_permission_level_display()}.',
+                source_url='/roles',
+                metadata={
+                    'target_user_id': target_user.id,
+                    'change_type': 'section_permission_bulk_update',
+                    'section': section.name,
+                    'old_permission_level': current_level,
+                    'new_permission_level': permission.permission_level,
+                    'created': created,
+                },
+            )
+
         return Response({
             'success': True,
             'message': f'Updated permissions for {target_user.username}',
-            'updated_permissions': updated_permissions
+            'updated_permissions': updated_permissions,
+            'unchanged_permissions': unchanged_count,
         })
     
     @action(detail=False, methods=['get'])
@@ -797,3 +1069,5 @@ class DepartmentViewSet(ModelViewSet):
             'success': True,
             'departments': department_data
         })
+
+

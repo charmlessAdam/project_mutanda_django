@@ -134,14 +134,29 @@ def log_order_activity(order, user, activity_type, description, request=None, **
     
     return OrderActivity.objects.create(**activity_data)
 
-def create_notification(order, recipient, notification_type, title, message):
+def create_notification(
+    order,
+    recipient,
+    notification_type,
+    title,
+    message,
+    *,
+    category='order',
+    actor=None,
+    source_url='/order-history',
+    metadata=None,
+):
     """Helper function to create notifications"""
     return OrderNotification.objects.create(
         order=order,
         recipient=recipient,
+        actor=actor,
+        category=category,
         notification_type=notification_type,
         title=title,
-        message=message
+        message=message,
+        source_url=source_url or '',
+        metadata=metadata or {},
     )
 
 def generate_order_number(order_type):
@@ -1610,9 +1625,23 @@ class OrderNotificationViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        return OrderNotification.objects.filter(
+        queryset = OrderNotification.objects.filter(
             recipient=self.request.user
-        ).select_related('order', 'order__requested_by')
+        ).select_related('order', 'order__requested_by', 'actor')
+
+        category = self.request.query_params.get('category')
+        if category:
+            queryset = queryset.filter(category=category)
+
+        is_read = self.request.query_params.get('is_read')
+        if is_read in ('true', 'false'):
+            queryset = queryset.filter(is_read=(is_read == 'true'))
+
+        q = (self.request.query_params.get('q') or '').strip()
+        if q:
+            queryset = queryset.filter(Q(title__icontains=q) | Q(message__icontains=q))
+
+        return queryset
     
     @action(detail=True, methods=['post'])
     def mark_read(self, request, pk=None):
@@ -1621,3 +1650,21 @@ class OrderNotificationViewSet(viewsets.ReadOnlyModelViewSet):
         notification.read_at = timezone.now()
         notification.save()
         return Response({'message': 'Notification marked as read'})
+
+    @action(detail=False, methods=['post'])
+    def mark_all_read(self, request):
+        category = request.data.get('category')
+        queryset = self.get_queryset().filter(is_read=False)
+        if category:
+            queryset = queryset.filter(category=category)
+        now = timezone.now()
+        updated = queryset.update(is_read=True, read_at=now)
+        return Response({'message': 'Notifications marked as read', 'updated': updated})
+
+    @action(detail=False, methods=['get'])
+    def unread_count(self, request):
+        queryset = self.get_queryset().filter(is_read=False)
+        category = request.query_params.get('category')
+        if category:
+            queryset = queryset.filter(category=category)
+        return Response({'unread_count': queryset.count()})

@@ -24,11 +24,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-dlf4uhec%#dhmc2)vw4555-j6#fu!=@d^faig)1ykkds1gxumt')
-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'True').lower() == 'true'
+
+# SECURITY WARNING: keep the secret key used in production secret!
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-dlf4uhec%#dhmc2)vw4555-j6#fu!=@d^faig)1ykkds1gxumt')
 
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1,18.197.254.230,agricore.nabutest.com,www.agricore.nabutest.com,api.agricore.nabutest.com,api.agricore.nabutest.com:8080').split(',')
 
@@ -52,11 +52,12 @@ INSTALLED_APPS = [
     'orders',
     'inventory',
     'workers',
+    'messaging',
 ]
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'users.authentication.CookieOrHeaderJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
@@ -74,6 +75,14 @@ SIMPLE_JWT = {
     'UPDATE_LAST_LOGIN': True,
 }
 
+# JWT cookie settings (httpOnly auth)
+JWT_ACCESS_COOKIE_NAME = os.environ.get('JWT_ACCESS_COOKIE_NAME', 'access_token')
+JWT_REFRESH_COOKIE_NAME = os.environ.get('JWT_REFRESH_COOKIE_NAME', 'refresh_token')
+JWT_COOKIE_SECURE = os.environ.get('JWT_COOKIE_SECURE', 'True').lower() == 'true' if not DEBUG else False
+JWT_COOKIE_SAMESITE = os.environ.get('JWT_COOKIE_SAMESITE', 'None' if not DEBUG else 'Lax')
+JWT_COOKIE_DOMAIN = os.environ.get('JWT_COOKIE_DOMAIN') or None
+JWT_COOKIE_PATH = '/'
+JWT_COOKIE_REFRESH_PATH = '/api/auth/'
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -85,7 +94,38 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    CORS_ALLOW_ALL_ORIGINS = False
+    default_cors_origins = 'https://agricore.nabutest.com,https://www.agricore.nabutest.com,https://master.dgpa1aqn4ppz.amplifyapp.com'
+    CORS_ALLOWED_ORIGINS = [
+        origin.strip()
+        for origin in os.environ.get('CORS_ALLOWED_ORIGINS', default_cors_origins).split(',')
+        if origin.strip()
+    ]
+
+CORS_ALLOW_CREDENTIALS = True
+
+default_csrf_trusted = (
+    'http://localhost:5173,'
+    'http://127.0.0.1:5173,'
+    'https://agricore.nabutest.com,'
+    'https://www.agricore.nabutest.com,'
+    'https://master.dgpa1aqn4ppz.amplifyapp.com'
+)
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get('CSRF_TRUSTED_ORIGINS', default_csrf_trusted).split(',')
+    if origin.strip()
+]
+# Production security hardening
+SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'False').lower() == 'true' if not DEBUG else False
+SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', '0')) if not DEBUG else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = os.environ.get('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'False').lower() == 'true' if not DEBUG else False
+SECURE_HSTS_PRELOAD = os.environ.get('SECURE_HSTS_PRELOAD', 'False').lower() == 'true' if not DEBUG else False
+SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', 'True').lower() == 'true' if not DEBUG else False
+CSRF_COOKIE_SECURE = os.environ.get('CSRF_COOKIE_SECURE', 'True').lower() == 'true' if not DEBUG else False
 
 ROOT_URLCONF = 'project_mutanda_django.urls'
 
@@ -119,15 +159,15 @@ if DEBUG:
         }
     }
 else:
-    # Production: Use AWS RDS (PostgreSQL)
+    # Production: Use PostgreSQL from environment variables
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
-            'NAME': 'mutanda-project',
-            'USER': 'Cinema8208',
-            'PASSWORD': 'nZQ#VP*oU&qx5o',
-            'HOST': 'mutanda-project.cx5vznvbyjsm.eu-central-1.rds.amazonaws.com',
-            'PORT': '5432',
+            'NAME': os.environ.get('DATABASE_NAME', 'mutanda-project'),
+            'USER': os.environ.get('DATABASE_USER', 'Cinema8208'),
+            'PASSWORD': os.environ.get('DATABASE_PASSWORD', 'nZQ#VP*oU&qx5o'),
+            'HOST': os.environ.get('DATABASE_HOST', 'mutanda-project.cx5vznvbyjsm.eu-central-1.rds.amazonaws.com'),
+            'PORT': os.environ.get('DATABASE_PORT', '5432'),
         }
     }
 
@@ -176,3 +216,11 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Custom User Model
 AUTH_USER_MODEL = 'users.User'
+
+
+
+
+
+
+
+
